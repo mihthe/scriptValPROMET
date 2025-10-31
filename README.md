@@ -1,10 +1,9 @@
 **main project** at https://github.com/slrenne/PROMETheus.git
 
 
+<br>
 
+**this repository**: validation script draft modifiable by collaborators [^1]
 
-
-**this repository**: validation script draft modifiable by collaborators
-
-if needed, contact michelle.teng@st.hunimed.eu
+[^1]: if needed, contact michelle.teng@st.hunimed.eu
 
