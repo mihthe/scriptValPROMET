@@ -735,3 +735,479 @@ main_part2 <- function(result_part1) {
 
 # save in result_part2
  result_part2 <- main_part2(result_part1)
+
+
+###############################################################################
+                 #additional tests
+#------------------------------------------------------------------------------
+# 1. BAYESIAN R² 
+#------------------------------------------------------------------------------
+
+compute_bayesian_r2 <- function(fit, stan_data) {
+  cat("\n=== Bayesian R² ===\n")
+  
+  # extract posterior samples
+  posterior <- extract(fit)
+  n_samples <- length(posterior$alpha)
+  
+  # compute fitted values for each posterior sample
+  y_obs <- stan_data$mitosis_specimen
+  n <- length(y_obs)
+  
+  # for each posterior sample, compute variance explained
+  r2_samples <- numeric(n_samples)
+  
+  for (i in 1:n_samples) {
+    # get predicted values
+    lambda_i <- exp(posterior$lambda[i, ])
+    y_pred <- lambda_i
+    
+    # compute R²: var(fitted) / [var(fitted) + var(residuals)]
+    var_fit <- var(y_pred)
+    var_res <- mean((y_obs - y_pred)^2)
+    r2_samples[i] <- var_fit / (var_fit + var_res)
+  }
+  
+  r2_summary <- data.frame(
+    mean = mean(r2_samples),
+    sd = sd(r2_samples),
+    q2.5 = quantile(r2_samples, 0.025),
+    q50 = quantile(r2_samples, 0.50),
+    q97.5 = quantile(r2_samples, 0.975)
+  )
+  
+  cat("Bayesian R² Summary:\n")
+  print(r2_summary)
+  
+  # Plot
+  p <- ggplot(data.frame(r2 = r2_samples), aes(x = r2)) +
+    geom_density(fill = "skyblue", alpha = 0.7) +
+    geom_vline(xintercept = mean(r2_samples), 
+               linetype = "dashed", color = "red") +
+    labs(title = "Bayesian R² Distribution",
+         subtitle = sprintf("Mean R² = %.3f", mean(r2_samples)),
+         x = "R²", y = "Density") +
+    theme_minimal()
+  
+  print(p)
+  
+  return(list(samples = r2_samples, summary = r2_summary, plot = p))
+}
+
+#------------------------------------------------------------------------------
+# 2. SIMPLE CALIBRATION PLOT 
+#------------------------------------------------------------------------------
+
+plot_simple_calibration <- function(result_part2) {
+  cat("\n=== Simple Calibration Plot ===\n")
+  
+  pred_df <- result_part2$oos_validation$predictions
+  
+  # base R plot 
+  plot(pred_df$observed, pred_df$predicted,
+       xlab = "Observed Mitotic Count",
+       ylab = "Predicted Mitotic Count (Median)",
+       main = "Calibration Plot",
+       pch = 19, col = as.numeric(pred_df$location),
+       cex = 1.2)
+  
+  abline(0, 1, col = "red", lwd = 2, lty = 2)
+  
+  legend("topleft", 
+         legend = levels(pred_df$location),
+         col = 1:4, pch = 19,
+         title = "Location")
+  
+  # Add R² text
+  r2_val <- cor(pred_df$observed, pred_df$predicted)^2
+  text(max(pred_df$observed) * 0.1, max(pred_df$predicted) * 0.9,
+       sprintf("R² = %.3f", r2_val), pos = 4)
+}
+
+#------------------------------------------------------------------------------
+# 3. RESIDUAL ANALYSIS 
+#------------------------------------------------------------------------------
+
+plot_residuals <- function(result_part2) {
+  cat("\n=== Residual Analysis ===\n")
+  
+  pred_df <- result_part2$oos_validation$predictions
+  residuals <- pred_df$observed - pred_df$predicted
+  
+  # residual plot (like script1)
+  par(mfrow = c(2, 2))
+  
+  # 1. Residuals vs Index
+  plot(residuals, type = "h", 
+       main = "Residuals vs Index",
+       ylab = "Residual", xlab = "Index",
+       col = as.numeric(pred_df$location))
+  abline(h = 0, col = "red", lty = 2)
+  
+  # 2. Residuals vs Predicted
+  plot(pred_df$predicted, residuals,
+       main = "Residuals vs Predicted",
+       xlab = "Predicted Value", ylab = "Residual",
+       pch = 19, col = as.numeric(pred_df$location))
+  abline(h = 0, col = "red", lty = 2)
+  
+  # 3. histogram of residuals
+  hist(residuals, breaks = 20, 
+       main = "Distribution of Residuals",
+       xlab = "Residual", col = "lightblue")
+  
+  # 4. Q-Q plot
+  qqnorm(residuals, main = "Q-Q Plot of Residuals")
+  qqline(residuals, col = "red")
+  
+  par(mfrow = c(1, 1))
+  
+  # Summary statistics
+  cat("\nResidual Statistics:\n")
+  cat(sprintf("  Mean: %.3f\n", mean(residuals)))
+  cat(sprintf("  SD: %.3f\n", sd(residuals)))
+  cat(sprintf("  Min: %.3f\n", min(residuals)))
+  cat(sprintf("  Max: %.3f\n", max(residuals)))
+}
+
+#------------------------------------------------------------------------------
+# 4. SENSITIVITY ANALYSIS 
+#------------------------------------------------------------------------------
+
+perform_sensitivity_analysis <- function(stan_code, stan_data) {
+  cat("\n=== Sensitivity Analysis ===\n")
+  cat("Testing robustness to prior specifications...\n")
+  
+  # original priors (from the paper)
+  cat("\n1. Original Priors (Paper-based):\n")
+  cat("  alpha ~ normal(1.75, 0.5)\n")
+  cat("  delta ~ normal(1, 0.3)\n")
+  cat("  epsilon ~ normal(-0.9, 0.3)\n")
+  
+  # fit with wider priors
+  stan_code_wide <- gsub(
+    "alpha ~ normal\\(1.75, 0.5\\);",
+    "alpha ~ normal(1.75, 1.0);",
+    stan_code
+  )
+  stan_code_wide <- gsub(
+    "delta ~ normal\\(1, 0.3\\);",
+    "delta ~ normal(1, 0.6);",
+    stan_code_wide
+  )
+  stan_code_wide <- gsub(
+    "epsilon ~ normal\\(-0.9, 0.3\\);",
+    "epsilon ~ normal(-0.9, 0.6);",
+    stan_code_wide
+  )
+  
+  cat("\n2. Wider Priors (2× SD):\n")
+  cat("  alpha ~ normal(1.75, 1.0)\n")
+  cat("  delta ~ normal(1, 0.6)\n")
+  cat("  epsilon ~ normal(-0.9, 0.6)\n")
+  
+  cat("\nFitting model with wider priors...\n")
+  
+  model_wide <- stan_model(model_code = stan_code_wide)
+  fit_wide <- sampling(
+    model_wide,
+    data = stan_data,
+    chains = 2,
+    iter = 2000,
+    warmup = 1000,
+    refresh = 0
+  )
+  
+  # fit with weakly informative priors
+  stan_code_weak <- gsub(
+    "alpha ~ normal\\(1.75, 0.5\\);",
+    "alpha ~ normal(0, 10);",
+    stan_code
+  )
+  stan_code_weak <- gsub(
+    "delta ~ normal\\(1, 0.3\\);",
+    "delta ~ normal(0, 10);",
+    stan_code_weak
+  )
+  stan_code_weak <- gsub(
+    "epsilon ~ normal\\(-0.9, 0.3\\);",
+    "epsilon ~ normal(0, 10);",
+    stan_code_weak
+  )
+  
+  cat("\n3. Weakly Informative Priors:\n")
+  cat("  alpha ~ normal(0, 10)\n")
+  cat("  delta ~ normal(0, 10)\n")
+  cat("  epsilon ~ normal(0, 10)\n")
+  
+  cat("\nFitting model with weakly informative priors...\n")
+  
+  model_weak <- stan_model(model_code = stan_code_weak)
+  fit_weak <- sampling(
+    model_weak,
+    data = stan_data,
+    chains = 2,
+    iter = 2000,
+    warmup = 1000,
+    refresh = 0
+  )
+  
+  return(list(
+    fit_wide = fit_wide,
+    fit_weak = fit_weak
+  ))
+}
+
+compare_sensitivity_results <- function(fit_original, fit_wide, fit_weak) {
+  cat("\n=== Comparing Prior Sensitivity ===\n")
+  
+  # Extract key parameters
+  params <- c("alpha", "delta", "epsilon")
+  
+  comparison_df <- data.frame(
+    parameter = params,
+    original_mean = summary(fit_original, pars = params)$summary[, "mean"],
+    wide_mean = summary(fit_wide, pars = params)$summary[, "mean"],
+    weak_mean = summary(fit_weak, pars = params)$summary[, "mean"]
+  ) %>%
+    mutate(
+      diff_wide = abs(wide_mean - original_mean),
+      diff_weak = abs(weak_mean - original_mean),
+      max_diff = pmax(diff_wide, diff_weak)
+    )
+  
+  print(comparison_df)
+  
+  cat("\nInterpretation:\n")
+  if (max(comparison_df$max_diff) < 0.1) {
+    cat("✓ Results are ROBUST to prior specification (max diff < 0.1)\n")
+  } else if (max(comparison_df$max_diff) < 0.3) {
+    cat("⚠ Results show MODERATE sensitivity (max diff 0.1-0.3)\n")
+  } else {
+    cat("✗ Results are SENSITIVE to priors (max diff > 0.3)\n")
+  }
+  
+  return(comparison_df)
+}
+
+#------------------------------------------------------------------------------
+# 5. K-FOLD CROSS-VALIDATION 
+#------------------------------------------------------------------------------
+
+perform_kfold_cv <- function(stan_code, full_data, K = 10) {
+  cat("\n=== K-Fold Cross-Validation ===\n")
+  cat(sprintf("Performing %d-fold cross-validation...\n", K))
+  
+  n <- nrow(full_data)
+  fold_ids <- sample(rep(1:K, length.out = n))
+  
+  elpd_kfold <- numeric(K)
+  
+  for (k in 1:K) {
+    cat(sprintf("Fold %d/%d...\n", k, K))
+    
+    # split data
+    train_idx <- fold_ids != k
+    test_idx <- fold_ids == k
+    
+    train_data <- full_data[train_idx, ]
+    test_data <- full_data[test_idx, ]
+    
+    # prepare Stan data
+    train_stan <- prepare_stan_data(train_data)
+    test_stan <- prepare_stan_data(test_data)
+    
+    # fit model
+    model <- stan_model(model_code = stan_code)
+    fit <- sampling(
+      model,
+      data = train_stan,
+      chains = 2,
+      iter = 1000,
+      warmup = 500,
+      refresh = 0
+    )
+    
+    # compute log predictive density on test fold
+    posterior <- extract(fit)
+    n_test <- test_stan$N
+    
+    log_pred_dens <- numeric(n_test)
+    for (i in 1:n_test) {
+      lambda_samples <- exp(posterior$lambda[, i])
+      pred_probs <- dpois(test_stan$mitosis_specimen[i], lambda_samples)
+      log_pred_dens[i] <- log(mean(pred_probs))
+    }
+    
+    elpd_kfold[k] <- sum(log_pred_dens)
+  }
+  
+  elpd_total <- sum(elpd_kfold)
+  se_elpd <- sd(elpd_kfold) * sqrt(K)
+  
+  cat("\n=== K-Fold CV Results ===\n")
+  cat(sprintf("ELPD: %.2f (SE: %.2f)\n", elpd_total, se_elpd))
+  
+  return(list(
+    elpd = elpd_total,
+    se = se_elpd,
+    fold_elpds = elpd_kfold
+  ))
+}
+
+# worflow altogether
+
+hybrid_validation <- function(result_part1, result_part2) {
+  cat("\n")
+  cat("═══════════════════════════════════════════════════════════\n")
+  cat("  HYBRID VALIDATION: Comprehensive + Script1 Methods\n")
+  cat("═══════════════════════════════════════════════════════════\n")
+  
+  # part 1: comprehensive validation 
+  cat("\n✓ Part 1: Core Validation Complete (from result_part2)\n")
+  cat("  - Convergence diagnostics\n")
+  cat("  - Posterior predictive checks\n")
+  cat("  - WAIC and LOO-CV\n")
+  cat("  - Out-of-sample validation\n")
+  cat("  - Parameter inference\n")
+  
+  # part 2: added methods
+  cat("\n▸ Part 2: Additional Validations (from Script1)\n")
+  
+  # 1. bayesian R²
+  cat("\n[1/4] Computing Bayesian R²...\n")
+  r2_result <- compute_bayesian_r2(result_part2$fit, result_part1$train_stan)
+  
+  # 2. simple calibration plot
+  cat("\n[2/4] Creating calibration plot...\n")
+  plot_simple_calibration(result_part2)
+  
+  # 3. residual analysis
+  cat("\n[3/4] Performing residual analysis...\n")
+  plot_residuals(result_part2)
+  
+  # 4. sensitivity analysis
+  cat("\n[4/4] Conducting sensitivity analysis...\n")
+  sensitivity_fits <- perform_sensitivity_analysis(
+    result_part1$stan_code,
+    result_part1$train_stan
+  )
+  
+  sensitivity_comparison <- compare_sensitivity_results(
+    result_part2$fit,
+    sensitivity_fits$fit_wide,
+    sensitivity_fits$fit_weak
+  )
+  
+  cat("\n")
+  cat("═══════════════════════════════════════════════════════════\n")
+  cat("  VALIDATION COMPLETE\n")
+  cat("═══════════════════════════════════════════════════════════\n")
+  
+  # compile all results
+  hybrid_results <- list(
+    core_validation = result_part2,
+    bayesian_r2 = r2_result,
+    sensitivity = list(
+      fits = sensitivity_fits,
+      comparison = sensitivity_comparison
+    )
+  )
+  
+  return(hybrid_results)
+}
+
+################################################################################
+# COMPREHENSIVE VALIDATION REPORT
+################################################################################
+
+generate_validation_report <- function(hybrid_results) {
+  cat("\n")
+  cat("═══════════════════════════════════════════════════════════\n")
+  cat("           COMPREHENSIVE VALIDATION REPORT\n")
+  cat("═══════════════════════════════════════════════════════════\n")
+  
+  # 1: model convergence
+  cat("\n1. MODEL CONVERGENCE\n")
+  cat("   ────────────────────────────────────────────────────────\n")
+  
+  diag <- hybrid_results$core_validation$diagnostics
+  cat(sprintf("   Converged: %s\n", 
+              ifelse(diag$converged, "✓ YES", "✗ NO")))
+  cat(sprintf("   Max Rhat: %.4f %s\n", 
+              max(diag$rhat, na.rm = TRUE),
+              ifelse(max(diag$rhat, na.rm = TRUE) < 1.01, "(✓)", "(✗)")))
+  cat(sprintf("   Min ESS: %.0f %s\n", 
+              min(diag$ess_bulk, na.rm = TRUE),
+              ifelse(min(diag$ess_bulk, na.rm = TRUE) > 400, "(✓)", "(✗)")))
+  cat(sprintf("   Divergences: %d %s\n", 
+              diag$divergences,
+              ifelse(diag$divergences == 0, "(✓)", "(✗)")))
+  
+  # 2: model fit
+  cat("\n2. MODEL FIT QUALITY\n")
+  cat("   ────────────────────────────────────────────────────────\n")
+  
+  r2 <- hybrid_results$bayesian_r2$summary
+  cat(sprintf("   Bayesian R²: %.3f [%.3f, %.3f]\n",
+              r2$mean, r2$q2.5, r2$q97.5))
+  
+  ic <- hybrid_results$core_validation$information_criteria
+  cat(sprintf("   WAIC: %.1f\n", 
+              ic$waic$estimates["waic", "Estimate"]))
+  cat(sprintf("   LOO-CV: %.1f\n", 
+              ic$loo$estimates["looic", "Estimate"]))
+  
+  # 3: prediction accuracy
+  cat("\n3. PREDICTION ACCURACY\n")
+  cat("   ────────────────────────────────────────────────────────\n")
+  
+  oos <- hybrid_results$core_validation$oos_validation
+  cat(sprintf("   MAE: %.3f\n", oos$mae))
+  cat(sprintf("   RMSE: %.3f\n", oos$rmse))
+  cat(sprintf("   90%% Coverage: %.3f %s\n", 
+              oos$coverage_90,
+              ifelse(oos$coverage_90 > 0.85 & oos$coverage_90 < 0.95, 
+                     "(✓)", "(⚠)")))
+  
+  # 4: prior sensitivity
+  cat("\n4. PRIOR SENSITIVITY\n")
+  cat("   ────────────────────────────────────────────────────────\n")
+  
+  sens <- hybrid_results$sensitivity$comparison
+  cat(sprintf("   Max parameter difference: %.3f\n", max(sens$max_diff)))
+  if (max(sens$max_diff) < 0.1) {
+    cat("   Assessment: ✓ ROBUST to prior specification\n")
+  } else if (max(sens$max_diff) < 0.3) {
+    cat("   Assessment: ⚠ MODERATELY sensitive to priors\n")
+  } else {
+    cat("   Assessment: ✗ SENSITIVE to prior specification\n")
+  }
+  
+  # section 5: overall assessment
+  cat("\n5. OVERALL ASSESSMENT\n")
+  cat("   ────────────────────────────────────────────────────────\n")
+  
+  all_checks <- c(
+    diag$converged,
+    max(diag$rhat, na.rm = TRUE) < 1.01,
+    diag$divergences == 0,
+    oos$coverage_90 > 0.85 & oos$coverage_90 < 0.95,
+    max(sens$max_diff) < 0.3
+  )
+  
+  n_passed <- sum(all_checks)
+  n_total <- length(all_checks)
+  
+  cat(sprintf("   Checks passed: %d/%d\n", n_passed, n_total))
+  
+  if (n_passed == n_total) {
+    cat("   \n   ✓✓✓ MODEL IS READY FOR USE ✓✓✓\n")
+  } else if (n_passed >= n_total - 1) {
+    cat("   \n   ⚠ MODEL IS ACCEPTABLE (minor issues)\n")
+  } else {
+    cat("   \n   ✗ MODEL NEEDS IMPROVEMENT\n")
+  }
+  
+  cat("\n═══════════════════════════════════════════════════════════\n\n")
+}
