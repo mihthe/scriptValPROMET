@@ -1,0 +1,655 @@
+# SBC validation on generated data
+
+# load required libraries
+library(rethinking)      # For ulam() and Stan interface
+library(parallel)        # For parallel computation
+library(progressr)       # For progress bars (install if needed)
+
+# source the simulation engine
+SOURCED_FROM_MAIN <- TRUE  # Tells simulation script not to run tests
+source("script1.R") 
+
+# output directory if it doesn't exist
+if (!dir.exists("sbc_results")) {
+  dir.create("sbc_results")
+  cat("Created directory: sbc_results/\n")
+}
+
+
+#------------------------------------------------------------------------------
+# CONFIGURATION
+#------------------------------------------------------------------------------
+
+SBC_CONFIG <- list(
+  # core SBC parameters
+  N_simulations = 100,          # n of simulated datasets
+  
+  L_posterior_draws = 100,       # for possible rank values: [0, L]
+  
+  # //
+  use_parallel = FALSE,         # use multiple cores?
+  n_cores = NULL,                # NULL = auto-detect (leave 1 core free)
+  
+  # stan/ulam settings
+  stan_chains = 4,               # n of MCMC chains
+  stan_cores = 4,                # cores per model fit
+  stan_iter = 8000,              # total iterations (including warmup)
+  stan_warmup = 4000,            # warmup iterations (discarded)
+  
+  # progress tracking
+  save_every = 10,               # save intermediate results every N simulations
+  verbose = TRUE,                # Print progress messages?
+  
+  # file naming
+  run_id = format(Sys.time(), "%Y%m%d_%H%M%S"),  # unique ID
+  
+  # simulation settings (passed to simulation engine)
+  sim_config = CONFIG  # Uses default from script1.R
+  # modify if needed, e.g.:
+  # sim_config = modifyList(CONFIG, list(N_patients = 80))
+)
+
+
+#------------------------------------------------------------------------------
+# THE MODEL 
+#------------------------------------------------------------------------------
+
+# same model for real data
+# using non-centered parameterization to avoid divergences (?)
+
+model_formula <- alist(
+  # likelihood
+  m_surg ~ dpois(lambda),
+  
+  # linear predictor (log link)
+  log(lambda) <- a + b[L] * Si + g * m_bio * n + d * m_bio * y + e[L] * Su,
+  
+  # hierarchical priors for location effects
+  b[L] ~ normal(b_bar, sigmab),
+  e[L] ~ normal(e_bar, sigmae),
+  
+  # hyperpriors
+  b_bar ~ normal(-1, 0.2),
+  e_bar ~ normal(-1, 0.2),
+  sigmab ~ dexp(2),
+  sigmae ~ dexp(2),
+  
+  # other priors
+  a ~ normal(-1, 0.2),
+  g ~ normal(-1, 0.2),
+  d ~ normal(-1, 0.2)
+)
+
+
+#------------------------------------------------------------------------------
+# FIT MODEL TO ONE SIMULATED DATASET
+#------------------------------------------------------------------------------
+
+fit_one_simulation <- function(sim_idx, config = SBC_CONFIG, verbose = TRUE) {
+  #'
+  #' fit the model to one simulated dataset and compute rank statistics
+  #' 
+  #' @param sim_idx simulation index (for random seed)
+  #' @param config SBC configuration list
+  #' @param verbose print progress?
+  #' 
+  #' @return list containing:
+  #'   - ranks: Named vector of rank statistics for each parameter
+  #'   - convergence: Rhat values and ESS
+  #'   - timing: How long the fit took
+  #'   - sim_idx: Index of this simulation
+  
+  if (verbose) {
+    cat(sprintf("\n[Sim %d/%d] Starting...\n", 
+                sim_idx, config$N_simulations))
+  }
+  
+  start_time <- Sys.time()
+  
+  # seed for reproducibility
+  sim_seed <- 1000 + sim_idx
+  
+  
+  #----------------------------------------------------------------------------
+  # STEP 1: generate simulated data 
+  #----------------------------------------------------------------------------
+  
+  if (verbose) cat("  Generating data...\n")
+  
+  sim_result <- simulate_gist_dataset(
+    config = config$sim_config,
+    seed = sim_seed,
+    verbose = FALSE
+  )
+  
+  sim_data <- sim_result$data
+  true_params <- sim_result$truth
+  
+  
+  #----------------------------------------------------------------------------
+  # STEP 2: fit the model
+  #----------------------------------------------------------------------------
+  
+  if (verbose) cat("  Fitting model...\n")
+  
+  # suppress Stan output unless there are warnings/errors
+  sink_file <- tempfile()
+  if (!verbose) {
+    sink(sink_file)
+  }
+  
+  fit_result <- tryCatch({
+    
+    fit <- ulam(
+      model_formula,
+      data = sim_data,
+      chains = config$stan_chains,
+      cores = config$stan_cores,
+      iter = config$stan_iter,
+      warmup = config$stan_warmup,
+      log_lik = FALSE  # no log-likelihood (for time)
+    )
+    
+    list(success = TRUE, fit = fit, error = NULL)
+    
+  }, error = function(e) {
+    
+    list(success = FALSE, fit = NULL, error = as.character(e))
+    
+  })
+  
+  if (!verbose) {
+    sink()
+    unlink(sink_file)
+  }
+  
+  # success?
+  if (!fit_result$success) {
+    warning(sprintf("Simulation %d failed: %s", sim_idx, fit_result$error))
+    return(list(
+      sim_idx = sim_idx,
+      success = FALSE,
+      error = fit_result$error,
+      ranks = NULL,
+      convergence = NULL,
+      timing = NULL
+    ))
+  }
+  
+  fit <- fit_result$fit
+  
+  
+  #----------------------------------------------------------------------------
+  # STEP 3: extract posterior samples
+  #----------------------------------------------------------------------------
+  
+  if (verbose) cat("  Extracting posterior...\n")
+  
+  post_samples <- extract.samples(fit)
+  
+  if (sim_idx == 1) {  # Only print for first simulation
+    cat("\n=== DEBUGGING FIRST SIMULATION ===\n")
+    cat("Parameters in posterior:\n")
+    print(names(post_samples))
+    
+    cat("\nTrue parameters to validate:\n")
+    print(names(true_params))
+    
+    cat("\nSample sizes:\n")
+    cat("  a:", length(post_samples$a), "\n")
+    if ("b" %in% names(post_samples)) {
+      cat("  b:", dim(post_samples$b), "\n")
+    }
+    if ("e" %in% names(post_samples)) {
+      cat("  e:", dim(post_samples$e), "\n")
+    }
+    
+    cat("\nFirst few posterior values:\n")
+    cat("  a (alpha):", head(post_samples$a, 3), "\n")
+    cat("  g:", head(post_samples$g, 3), "\n")
+    if ("b" %in% names(post_samples)) {
+      cat("  b[,1]:", head(post_samples$b[,1], 3), "\n")
+    }
+    
+    cat("\nTrue values:\n")
+    cat("  alpha:", true_params["alpha"], "\n")
+    cat("  g:", true_params["g"], "\n")
+    cat("  b_1:", true_params["b_1"], "\n")
+    
+    cat("==================================\n\n")
+  }
+  
+  
+  #----------------------------------------------------------------------------
+  # STEP 4: thin to target number of draws (if needed)
+  #----------------------------------------------------------------------------
+  
+  # calculate effective sample size for each parameter
+  
+  post_list <- as.list(post_samples)
+  
+  # function to calculate ESS for a parameter
+  calc_ess <- function(x) {
+    if (is.matrix(x)) {
+      # For arrays (like b[L] or e[L]), get minimum ESS across all elements
+      apply(x, 2, function(col) {
+        n_eff <- coda::effectiveSize(col)
+        if (is.na(n_eff)) return(length(col))
+        return(n_eff)
+      })
+    } else {
+      n_eff <- coda::effectiveSize(x)
+      if (is.na(n_eff)) return(length(x))
+      return(n_eff)
+    }
+  }
+  
+  # ESS for all parameters
+  ess_values <- lapply(post_list, calc_ess)
+  
+  # determine thinning factor
+  # want L_posterior_draws effective samples
+  # thin by max(1, floor(actual_draws / L_posterior_draws))
+  
+  actual_draws <- nrow(post_samples$a)  # Total post-warmup draws
+  
+  # min ESS across all parameters
+  min_ess <- min(sapply(ess_values, function(x) {
+    if (is.numeric(x) && length(x) > 0) min(x, na.rm = TRUE) else Inf
+  }))
+  
+  if (min_ess < config$L_posterior_draws) {
+    warning(sprintf(
+      "Sim %d: Low ESS (%.0f). Consider increasing iterations.", 
+      sim_idx, min_ess
+    ))
+  }
+  
+  # thin the posterior
+  thin_factor <- max(1, floor(actual_draws / config$L_posterior_draws))
+  keep_indices <- seq(1, actual_draws, by = thin_factor)[1:config$L_posterior_draws]
+  
+  if (length(keep_indices) < config$L_posterior_draws) {
+    warning(sprintf(
+      "Sim %d: Only %d draws available after thinning (target: %d)",
+      sim_idx, length(keep_indices), config$L_posterior_draws
+    ))
+  }
+  
+  # thin all parameters
+  post_thinned <- lapply(post_list, function(x) {
+    if (is.matrix(x)) {
+      x[keep_indices, , drop = FALSE]
+    } else {
+      x[keep_indices]
+    }
+  })
+  
+  L_actual <- length(keep_indices)  # Actual number of draws after thinning
+  
+  
+  #----------------------------------------------------------------------------
+  # STEP 5: compute rank statistics
+  #----------------------------------------------------------------------------
+  
+  if (verbose) cat("  Computing ranks...\n")
+  
+  # for each parameter, how many posterior draws are less than true value
+  # rank statistic r ∈ [0, L]
+  
+  compute_rank <- function(posterior_draws, true_value) {
+    # Handle NA or NULL
+    if (is.null(posterior_draws) || is.null(true_value)) {
+      warning("NULL values in rank calculation")
+      return(NA)
+    }
+    if (any(is.na(posterior_draws))) {
+      warning("NA values in posterior draws")
+      return(NA)
+    }
+    sum(posterior_draws < true_value)
+  }
+  
+  # initialize ranks vector
+  ranks <- numeric(length(true_params))
+  names(ranks) <- names(true_params)
+  
+  # scalar parameters - check each exists before computing rank
+  if ("alpha" %in% names(true_params) && "a" %in% names(post_thinned)) {
+    ranks["alpha"] <- compute_rank(post_thinned$a, true_params["alpha"])
+  }
+  
+  if ("g" %in% names(true_params) && "g" %in% names(post_thinned)) {
+    ranks["g"] <- compute_rank(post_thinned$g, true_params["g"])
+  }
+  
+  if ("d" %in% names(true_params) && "d" %in% names(post_thinned)) {
+    ranks["d"] <- compute_rank(post_thinned$d, true_params["d"])
+  }
+  
+  if ("sigma_b" %in% names(true_params) && "sigmab" %in% names(post_thinned)) {
+    ranks["sigma_b"] <- compute_rank(post_thinned$sigmab, true_params["sigma_b"])
+  }
+  
+  if ("sigma_e" %in% names(true_params) && "sigmae" %in% names(post_thinned)) {
+    ranks["sigma_e"] <- compute_rank(post_thinned$sigmae, true_params["sigma_e"])
+  }
+  
+  # location-specific parameters (CENTERED parameterization)
+  # directly from the posterior (not transformed)
+  
+  if ("b" %in% names(post_thinned)) {
+    for (i in 1:4) {
+      param_name <- paste0("b_", i)
+      if (param_name %in% names(true_params)) {
+        ranks[param_name] <- compute_rank(post_thinned$b[, i], true_params[param_name])
+      }
+    }
+  } else {
+    warning("Parameter 'b' not found in posterior - check model formula")
+  }
+  
+  if ("e" %in% names(post_thinned)) {
+    for (i in 1:4) {
+      param_name <- paste0("e_", i)
+      if (param_name %in% names(true_params)) {
+        ranks[param_name] <- compute_rank(post_thinned$e[, i], true_params[param_name])
+      }
+    }
+  } else {
+    warning("Parameter 'e' not found in posterior - check model formula")
+  }
+  
+  # Check for any NA ranks
+  if (any(is.na(ranks))) {
+    warning(sprintf("Sim %d: Some ranks are NA", sim_idx))
+    print(names(ranks)[is.na(ranks)])
+  }
+  
+  
+  #----------------------------------------------------------------------------
+  # STEP 6: extract convergence diagnostics
+  #----------------------------------------------------------------------------
+  
+  if (verbose) cat("  Checking convergence...\n")
+  
+  convergence_summary <- precis(fit, depth = 2)
+  
+  # get max Rhat and min ESS
+  max_rhat <- max(convergence_summary$Rhat4, na.rm = TRUE)
+  min_ess <- min(convergence_summary$n_eff, na.rm = TRUE)
+  
+  convergence <- list(
+    max_rhat = max_rhat,
+    min_ess = min_ess,
+    all_rhat_ok = max_rhat < 1.01,  # Common threshold
+    all_ess_ok = min_ess > 400      # Rule of thumb
+  )
+  
+  
+  #----------------------------------------------------------------------------
+  # STEP 7: pack results
+  #----------------------------------------------------------------------------
+  
+  end_time <- Sys.time()
+  timing <- as.numeric(difftime(end_time, start_time, units = "secs"))
+  
+  if (verbose) {
+    cat(sprintf("  Done! (%.1f seconds)\n", timing))
+    cat(sprintf("    Rhat: %.3f | ESS: %.0f\n", max_rhat, min_ess))
+  }
+  
+  return(list(
+    sim_idx = sim_idx,
+    success = TRUE,
+    ranks = ranks,
+    convergence = convergence,
+    timing = timing,
+    L_draws = L_actual,
+    true_params = true_params,
+    error = NULL
+  ))
+}
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: PARALLEL SBC
+#------------------------------------------------------------------------------
+
+run_sbc_parallel <- function(config = SBC_CONFIG) {
+  #'
+  #' Run SBC validation in parallel
+  #' 
+  #' @param config SBC configuration
+  #' @return List of results from all simulations
+  
+  cat("\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat("STARTING SBC VALIDATION\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat(sprintf("Run ID: %s\n", config$run_id))
+  cat(sprintf("Simulations: %d\n", config$N_simulations))
+  cat(sprintf("Posterior draws per sim: %d\n", config$L_posterior_draws))
+  cat(sprintf("Sample size: %d patients\n", config$sim_config$N_patients))
+  cat(sprintf("Locations: %d\n", config$sim_config$N_locations))
+  
+  if (config$use_parallel) {
+    n_cores <- config$n_cores
+    if (is.null(n_cores)) {
+      n_cores <- max(1, detectCores() - 1)
+    }
+    cat(sprintf("Parallel cores: %d\n", n_cores))
+    
+    # Estimate time
+    est_time_per_sim <- 3  # minutes (conservative estimate)
+    est_total_mins <- (config$N_simulations / n_cores) * est_time_per_sim
+    cat(sprintf("Estimated time: %.1f hours\n", est_total_mins / 60))
+  }
+  
+  cat(rep("-", 78), "\n", sep = "")
+  
+  start_time <- Sys.time()
+  
+  
+  #----------------------------------------------------------------------------
+  # simulations
+  #----------------------------------------------------------------------------
+  
+  if (config$use_parallel && config$N_simulations > 1) {
+    
+    cat("Setting up parallel cluster...\n")
+    cl <- makeCluster(n_cores)
+    
+    # Export necessary objects to cluster
+    clusterExport(cl, c(
+      "fit_one_simulation",
+      "simulate_gist_dataset",
+      "model_formula",
+      "SBC_CONFIG",
+      "CONFIG"
+    ))
+    
+    # Load libraries on each worker
+    clusterEvalQ(cl, {
+      library(rethinking)
+    })
+    
+    cat("Running simulations in parallel...\n")
+    
+    results <- parLapply(
+      cl = cl,
+      X = 1:config$N_simulations,
+      fun = function(i) {
+        fit_one_simulation(i, config = SBC_CONFIG, verbose = FALSE)
+      }
+    )
+    
+    stopCluster(cl)
+    cat("Parallel cluster closed.\n")
+    
+  } else {
+    
+    cat("Running simulations sequentially...\n")
+    
+    results <- vector("list", config$N_simulations)
+    
+    for (i in 1:config$N_simulations) {
+      
+      results[[i]] <- fit_one_simulation(
+        i, 
+        config = config, 
+        verbose = config$verbose
+      )
+      
+      # save intermediate results
+      if (i %% config$save_every == 0) {
+        temp_file <- sprintf("sbc_results/intermediate_%s_sim%03d.rds", 
+                             config$run_id, i)
+        saveRDS(results[1:i], temp_file)
+        cat(sprintf("\n  Intermediate results saved: %s\n\n", temp_file))
+      }
+    }
+  }
+  
+  
+  #----------------------------------------------------------------------------
+  # summarize results
+  #----------------------------------------------------------------------------
+  
+  end_time <- Sys.time()
+  total_time <- difftime(end_time, start_time, units = "mins")
+  
+  n_success <- sum(sapply(results, function(x) x$success))
+  n_failed <- config$N_simulations - n_success
+  
+  cat("\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat("SBC VALIDATION COMPLETE\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat(sprintf("Total time: %.1f minutes\n", total_time))
+  cat(sprintf("Successful: %d/%d (%.1f%%)\n", 
+              n_success, config$N_simulations, 
+              100 * n_success / config$N_simulations))
+  
+  if (n_failed > 0) {
+    cat(sprintf("Failed: %d\n", n_failed))
+    cat("  (Check error messages above)\n")
+  }
+  
+  # Convergence summary
+  if (n_success > 0) {
+    max_rhats <- sapply(results, function(x) {
+      if (x$success) x$convergence$max_rhat else NA
+    })
+    max_rhats <- max_rhats[!is.na(max_rhats)]
+    
+    cat(sprintf("\nConvergence:\n"))
+    cat(sprintf("  Rhat range: [%.3f, %.3f]\n", 
+                min(max_rhats), max(max_rhats)))
+    cat(sprintf("  Sims with Rhat < 1.01: %d/%d\n",
+                sum(max_rhats < 1.01), length(max_rhats)))
+  }
+  
+  cat("\n")
+  
+  return(results)
+}
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: SAVE RESULTS
+#------------------------------------------------------------------------------
+
+save_sbc_results <- function(results, config = SBC_CONFIG) {
+  #'
+  #' Save SBC results in multiple formats
+  #' 
+  #' @param results List of simulation results
+  #' @param config Configuration used
+  
+  run_id <- config$run_id
+  
+  # Save full results object (for later analysis)
+  full_file <- sprintf("sbc_results/sbc_full_%s.rds", run_id)
+  saveRDS(list(
+    results = results,
+    config = config,
+    timestamp = Sys.time()
+  ), full_file)
+  cat(sprintf("Full results saved: %s\n", full_file))
+  
+  # Extract and save rank statistics as data frame (easier to work with)
+  successful_results <- results[sapply(results, function(x) x$success)]
+  
+  if (length(successful_results) > 0) {
+    
+    # Create data frame of ranks
+    rank_matrix <- do.call(rbind, lapply(successful_results, function(x) {
+      x$ranks
+    }))
+    
+    rank_df <- as.data.frame(rank_matrix)
+    rank_df$sim_idx <- sapply(successful_results, function(x) x$sim_idx)
+    
+    rank_file <- sprintf("sbc_results/sbc_ranks_%s.csv", run_id)
+    write.csv(rank_df, rank_file, row.names = FALSE)
+    cat(sprintf("Rank statistics saved: %s\n", rank_file))
+    
+    # Save summary statistics
+    summary_file <- sprintf("sbc_results/sbc_summary_%s.txt", run_id)
+    
+    sink(summary_file)
+    cat("SBC VALIDATION SUMMARY\n")
+    cat(rep("=", 60), "\n")
+    cat(sprintf("Run ID: %s\n", run_id))
+    cat(sprintf("Date: %s\n", Sys.time()))
+    cat(sprintf("N simulations: %d\n", config$N_simulations))
+    cat(sprintf("N successful: %d\n", length(successful_results)))
+    cat(sprintf("Sample size: %d\n", config$sim_config$N_patients))
+    cat(sprintf("Locations: %d\n", config$sim_config$N_locations))
+    cat(sprintf("Posterior draws: %d\n", config$L_posterior_draws))
+    cat("\nRank Statistics Summary:\n")
+    cat(rep("-", 60), "\n")
+    print(summary(rank_df[, -ncol(rank_df)]))  # Exclude sim_idx column
+    sink()
+    
+    cat(sprintf("Summary saved: %s\n", summary_file))
+  }
+  
+  cat("\nAll results saved to: sbc_results/\n")
+}
+
+
+#------------------------------------------------------------------------------
+# MAIN EXECUTION
+#------------------------------------------------------------------------------
+
+if (interactive() || !exists("SKIP_EXECUTION")) {
+  
+  cat("\n")
+  cat("Ready to run SBC validation.\n")
+  cat("\nCurrent configuration:\n")
+  print(SBC_CONFIG[c("N_simulations", "L_posterior_draws", "use_parallel")])
+  cat("\n")
+  
+  response <- readline(prompt = "Proceed? (yes/no): ")
+  
+  if (tolower(response) %in% c("yes", "y")) {
+    
+    # Run SBC
+    sbc_results <- run_sbc_parallel(config = SBC_CONFIG)
+    
+    # Save results
+    save_sbc_results(sbc_results, config = SBC_CONFIG)
+    
+    cat("\n")
+    cat("Next steps:\n")
+    cat("  1. Run 03_diagnostic_plots.R to visualize results\n")
+    cat("  2. Check for systematic deviations from uniformity\n")
+    cat("  3. If issues found, debug model or increase iterations\n")
+    cat("\n")
+    
+  } else {
+    cat("Execution cancelled.\n")
+  }
+}
