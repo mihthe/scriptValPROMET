@@ -1,0 +1,766 @@
+#but theres somequit that doesnt thing
+
+# required libraries
+library(ggplot2)
+library(gridExtra)     # multi-panel plots
+library(scales)        # alpha transparency
+
+# plot theme
+theme_set(theme_minimal(base_size = 12))
+
+
+#------------------------------------------------------------------------------
+# CONFIGURATION
+#------------------------------------------------------------------------------
+
+PLOT_CONFIG <- list(
+  # which results to load (set to NULL to choose interactively)
+  results_file = NULL,  
+  
+  # plot parameters
+  n_bins = 20,                    # n of bins in rank histogram
+  # divide (L + 1) evenly
+  
+  confidence_level = 0.99,        # for uniform distribution bands
+  
+  # which parameters to plot
+  parameters_to_plot = c(
+    "alpha",                      # intercept
+    "g",                          # biopsy count effect (no therapy)
+    "d",                          # biopsy count effect (with response)
+    "b_1", "b_2", "b_3", "b_4",  # size effects by location
+    "e_1", "e_2", "e_3", "e_4",  # surface effects by location
+    "sigma_b", "sigma_e"          # hierarchical SDs
+  ),
+  
+  # Plot styling
+  colors = list(
+    bars = "#2E86AB",             # histogram bars
+    uniform_band = "gray70",      # expected uniform band
+    uniform_median = "gray30",    # expected median line
+    ecdf = "#A23B72",             # ECDF curve
+    ecdf_band = "gray80"          # ECDF confidence band
+  ),
+  
+  # output settings
+  output_dir = "sbc_plots",
+  save_plots = TRUE,
+  plot_format = "png",            # "png" or "pdf"
+  plot_width = 10,                # inches
+  plot_height = 8,
+  plot_dpi = 300
+)
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: LOAD SBC RESULTS
+#------------------------------------------------------------------------------
+
+load_sbc_results <- function(file_path = NULL) {
+  #'
+  #' from saved file
+  #' 
+  #' @param file_path path to .rds file (NULL = interactive selection)
+  #' @return list with results and configuration
+  
+  if (is.null(file_path)) {
+    # file selection
+    cat("\nAvailable SBC result files:\n")
+    files <- list.files("sbc_results", pattern = "sbc_full.*\\.rds$", 
+                        full.names = TRUE)
+    
+    if (length(files) == 0) {
+      stop("No SBC result files found in sbc_results/")
+    }
+    
+    for (i in seq_along(files)) {
+      file_info <- file.info(files[i])
+      cat(sprintf("  [%d] %s (%.1f MB, %s)\n", 
+                  i, basename(files[i]), 
+                  file_info$size / 1e6,
+                  format(file_info$mtime, "%Y-%m-%d %H:%M")))
+    }
+    
+    choice <- as.integer(readline(prompt = "\nSelect file number: "))
+    
+    if (choice < 1 || choice > length(files)) {
+      stop("Invalid selection")
+    }
+    
+    file_path <- files[choice]
+  }
+  
+  cat(sprintf("Loading: %s\n", file_path))
+  
+  data <- readRDS(file_path)
+  
+  # extract components
+  results <- data$results
+  config <- data$config
+  
+  # filter successful simulations
+  successful <- results[sapply(results, function(x) x$success)]
+  
+  cat(sprintf("Loaded %d successful simulations (out of %d total)\n",
+              length(successful), length(results)))
+  
+  return(list(
+    results = successful,
+    config = config,
+    file_path = file_path
+  ))
+}
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: EXTRACT RANK MATRIX
+#------------------------------------------------------------------------------
+
+extract_rank_matrix <- function(results) {
+  #'
+  #' from list of results to matrix of ranks
+  #' 
+  #' @param results list of successful simulation results
+  #' @return matrix with rows = simulations, columns = parameters
+  
+  rank_matrix <- do.call(rbind, lapply(results, function(x) x$ranks))
+  
+  return(rank_matrix)
+}
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: CALCULATE UNIFORM DISTRIBUTION BOUNDS
+#------------------------------------------------------------------------------
+
+calculate_uniform_bounds <- function(N_simulations, L_draws, 
+                                     n_bins, confidence = 0.99) {
+  #'
+  #' calculate expected bounds for uniform rank histogram
+  #' 
+  #' uniform distribution thus each bin should have N_simulations / n_bins
+  #' counts. we calculate confidence bands using binomial distribution.
+  #' 
+  #' @param N_simulations n of simulations
+  #' @param L_draws n of posterior draws per simulation
+  #' @param n_bins n of bins in histogram
+  #' @param confidence C level (e.g., 0.99)
+  #' 
+  #' @return list with lower, median, upper bounds
+  
+  # expected count per bin under uniformity
+  expected_count <- N_simulations / n_bins
+  
+  # P that a rank falls in any given bin
+  p_bin <- 1 / n_bins
+  
+  # binomial confidence interval
+  alpha <- 1 - confidence
+  lower <- qbinom(alpha / 2, N_simulations, p_bin)
+  upper <- qbinom(1 - alpha / 2, N_simulations, p_bin)
+  median <- qbinom(0.5, N_simulations, p_bin)
+  
+  return(list(
+    lower = lower,
+    median = median,
+    upper = upper,
+    expected = expected_count
+  ))
+}
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: CREATE RANK HISTOGRAM FOR ONE PARAMETER
+#------------------------------------------------------------------------------
+
+plot_rank_histogram <- function(ranks, param_name, L_draws, 
+                                config = PLOT_CONFIG) {
+  #'
+  #' for one parameter
+  #' 
+  #' @param ranks vector of rank statistics for this parameter
+  #' @param param_name name of parameter (for title)
+  #' @param L_draws number of posterior draws (determines possible ranks)
+  #' @param config plot configuration
+  #' @return ggplot object
+  
+  N_sims <- length(ranks)
+  n_bins <- config$n_bins
+  
+  # calculate uniform bounds
+  bounds <- calculate_uniform_bounds(N_sims, L_draws, n_bins, 
+                                     config$confidence_level)
+  
+  # create bins
+  # Ranks from 0 to L_draws, so we have L_draws + 1 possible values
+  # group these into n_bins bins
+  bin_width <- (L_draws + 1) / n_bins
+  bin_breaks <- seq(0, L_draws + 1, length.out = n_bins + 1)
+  
+  # bin the ranks
+  rank_bins <- cut(ranks, breaks = bin_breaks, 
+                   include.lowest = TRUE, right = FALSE)
+  bin_counts <- table(rank_bins)
+  
+  # data frame for plotting
+  plot_data <- data.frame(
+    bin = 1:n_bins,
+    count = as.vector(bin_counts),
+    bin_center = seq(bin_width/2, L_draws + 1 - bin_width/2, 
+                     length.out = n_bins)
+  )
+  
+  # plot
+  p <- ggplot(plot_data, aes(x = bin, y = count)) +
+    
+    # add uniform distribution band
+    geom_rect(aes(xmin = 0.5, xmax = n_bins + 0.5,
+                  ymin = bounds$lower, ymax = bounds$upper),
+              fill = config$colors$uniform_band, alpha = 0.3) +
+    
+    # add median line
+    geom_hline(yintercept = bounds$median, 
+               color = config$colors$uniform_median,
+               linetype = "dashed", linewidth = 0.5) +
+    
+    # add histogram bars
+    geom_col(fill = config$colors$bars, color = "white", 
+             width = 0.9) +
+    
+    # styling
+    labs(
+      title = param_name,
+      subtitle = sprintf("N = %d simulations, L = %d draws", 
+                         N_sims, L_draws),
+      x = "Rank statistic bin",
+      y = "Count"
+    ) +
+    
+    scale_x_continuous(breaks = seq(1, n_bins, by = max(1, n_bins %/% 10))) +
+    
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5, size = 9, color = "gray40"),
+      panel.grid.minor = element_blank()
+    )
+  
+  return(p)
+}
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: ECDF PLOT FOR ONE PARAMETER
+#------------------------------------------------------------------------------
+
+plot_rank_ecdf <- function(ranks, param_name, L_draws, 
+                           config = PLOT_CONFIG) {
+  #'
+  #' empirical CDF plot for ranks (more sensitive to subtle deviations)
+  #' 
+  #' @param ranks vector of rank statistics
+  #' @param param_name parameter name
+  #' @param L_draws number of posterior draws
+  #' @param config plot configuration
+  #' @return ggplot object
+  
+  N_sims <- length(ranks)
+  
+  # normalize ranks to [0, 1]
+  normalized_ranks <- ranks / L_draws
+  
+  # calculate ECDF
+  ecdf_fun <- ecdf(normalized_ranks)
+  x_vals <- seq(0, 1, length.out = 1000)
+  ecdf_vals <- ecdf_fun(x_vals)
+  
+  # expected uniform ECDF is just the identity line
+  # calculate confidence bands using Kolmogorov-Smirnov critical value
+  # for large N, critical value ≈ 1.36 / sqrt(N) for 95% confidence
+  ks_critical <- qnorm(1 - (1 - config$confidence_level) / 2) / sqrt(N_sims)
+  
+  # plot data
+  plot_data <- data.frame(
+    x = x_vals,
+    ecdf = ecdf_vals,
+    uniform = x_vals,
+    lower = pmax(0, x_vals - ks_critical),
+    upper = pmin(1, x_vals + ks_critical)
+  )
+  
+  # plot
+  p <- ggplot(plot_data, aes(x = x)) +
+    
+    # confidence band
+    geom_ribbon(aes(ymin = lower, ymax = upper),
+                fill = config$colors$ecdf_band, alpha = 0.3) +
+    
+    # expected uniform line
+    geom_line(aes(y = uniform), 
+              color = config$colors$uniform_median,
+              linetype = "dashed", linewidth = 0.5) +
+    
+    # empirical CDF
+    geom_line(aes(y = ecdf), 
+              color = config$colors$ecdf, 
+              linewidth = 1) +
+    
+    # styling
+    labs(
+      title = paste(param_name, "- ECDF"),
+      subtitle = sprintf("N = %d simulations", N_sims),
+      x = "Normalized rank",
+      y = "Cumulative probability"
+    ) +
+    
+    coord_fixed(ratio = 1) +
+    
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(hjust = 0.5, size = 9, color = "gray40"),
+      panel.grid.minor = element_blank()
+    )
+  
+  return(p)
+}
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: INTERPRET RANK HISTOGRAM SHAPE
+#------------------------------------------------------------------------------
+
+interpret_histogram <- function(ranks, param_name, L_draws) {
+  #'
+  #' Automatically interpret the shape of a rank histogram
+  #' 
+  #' @param ranks Vector of rank statistics
+  #' @param param_name Parameter name
+  #' @param L_draws Number of posterior draws
+  #' @return Character vector with interpretation
+  
+  N_sims <- length(ranks)
+  
+  # normalize ranks to [0, 1] for analysis
+  normalized_ranks <- ranks / L_draws
+  
+  # test statistics
+  
+  # 1. uniformity test (Kolmogorov-Smirnov)
+  ks_test <- ks.test(normalized_ranks, "punif", 0, 1)
+  is_uniform <- ks_test$p.value > 0.05
+  
+  # 2. shape analysis
+  # 3 regions: low [0, 0.33], mid [0.33, 0.67], high [0.67, 1]
+  low_count <- sum(normalized_ranks < 0.33)
+  mid_count <- sum(normalized_ranks >= 0.33 & normalized_ranks < 0.67)
+  high_count <- sum(normalized_ranks >= 0.67)
+  
+  expected_per_region <- N_sims / 3
+  
+  # calculate deviations
+  low_excess <- (low_count - expected_per_region) / expected_per_region
+  mid_excess <- (mid_count - expected_per_region) / expected_per_region
+  high_excess <- (high_count - expected_per_region) / expected_per_region
+  
+  # interpret shape
+  interpretation <- c()
+  
+  if (is_uniform) {
+    interpretation <- c(interpretation, 
+                        "✓ PASS: Ranks appear uniformly distributed")
+  } else {
+    interpretation <- c(interpretation,
+                        "✗ WARNING: Significant deviation from uniformity")
+    
+    # identify pattern
+    if (abs(low_excess) > 0.2 || abs(high_excess) > 0.2) {
+      if (low_excess > 0.2 && high_excess > 0.2 && mid_excess < -0.2) {
+        interpretation <- c(interpretation,
+                            "  Pattern: ∪-shape (under-dispersed posterior)",
+                            "  → Posterior is too narrow / overconfident",
+                            "  → Model may be missing uncertainty sources")
+      } else if (low_excess < -0.2 && high_excess < -0.2 && mid_excess > 0.2) {
+        interpretation <- c(interpretation,
+                            "  Pattern: ∩-shape (over-dispersed posterior)",
+                            "  → Posterior is too wide / underconfident",
+                            "  → Priors may be too vague or model overparameterized")
+      } else if (low_excess > 0.3 && high_excess < -0.2) {
+        interpretation <- c(interpretation,
+                            "  Pattern: Left-skewed (posterior biased high)",
+                            "  → Posterior systematically overestimates true value")
+      } else if (low_excess < -0.3 && high_excess > 0.2) {
+        interpretation <- c(interpretation,
+                            "  Pattern: Right-skewed (posterior biased low)",
+                            "  → Posterior systematically underestimates true value")
+      } else {
+        interpretation <- c(interpretation,
+                            "  Pattern: Irregular (investigate further)")
+      }
+    }
+    
+    # check extremes specifically (autocorrelation signature)
+    very_low <- sum(ranks == 0)
+    very_high <- sum(ranks == L_draws)
+    
+    if (very_low > N_sims * 0.05 || very_high > N_sims * 0.05) {
+      interpretation <- c(interpretation,
+                          "  NOTE: Spikes at boundaries detected",
+                          "  → May indicate autocorrelation in posterior samples",
+                          "  → Consider increasing thinning or iterations")
+    }
+  }
+  
+  return(interpretation)
+}
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: COMPREHENSIVE DIAGNOSTIC REPORT
+#------------------------------------------------------------------------------
+
+create_diagnostic_report <- function(rank_matrix, L_draws, 
+                                     parameters = NULL,
+                                     config = PLOT_CONFIG) {
+  #'
+  #' Generate comprehensive diagnostic report with plots and interpretations
+  #' 
+  #' @param rank_matrix Matrix of rank statistics
+  #' @param L_draws Number of posterior draws
+  #' @param parameters Vector of parameter names to analyze (NULL = all)
+  #' @param config Plot configuration
+  
+  if (is.null(parameters)) {
+    parameters <- colnames(rank_matrix)
+  }
+  
+  # filter to requested parameters
+  parameters <- intersect(parameters, colnames(rank_matrix))
+  
+  if (length(parameters) == 0) {
+    stop("No valid parameters found")
+  }
+  
+  cat("\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat("SBC DIAGNOSTIC REPORT\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat(sprintf("Date: %s\n", Sys.time()))
+  cat(sprintf("Parameters analyzed: %d\n", length(parameters)))
+  cat(sprintf("Simulations: %d\n", nrow(rank_matrix)))
+  cat(sprintf("Posterior draws: %d\n", L_draws))
+  cat(rep("-", 78), "\n", sep = "")
+  
+  # create output directory
+  if (config$save_plots && !dir.exists(config$output_dir)) {
+    dir.create(config$output_dir)
+    cat(sprintf("Created directory: %s/\n", config$output_dir))
+  }
+  
+  # analyze each parameter
+  all_interpretations <- list()
+  
+  for (param in parameters) {
+    
+    cat(sprintf("\n%s:\n", param))
+    
+    ranks <- rank_matrix[, param]
+    
+    # interpret
+    interpretation <- interpret_histogram(ranks, param, L_draws)
+    all_interpretations[[param]] <- interpretation
+    
+    for (line in interpretation) {
+      cat(sprintf("  %s\n", line))
+    }
+    
+    # plots
+    p_hist <- plot_rank_histogram(ranks, param, L_draws, config)
+    p_ecdf <- plot_rank_ecdf(ranks, param, L_draws, config)
+    
+    # plots
+    if (config$save_plots) {
+      # Histogram
+      hist_file <- file.path(
+        config$output_dir, 
+        sprintf("sbc_hist_%s.%s", param, config$plot_format)
+      )
+      ggsave(hist_file, p_hist, 
+             width = config$plot_width * 0.5, 
+             height = config$plot_height * 0.5,
+             dpi = config$plot_dpi)
+      
+      # ECDF
+      ecdf_file <- file.path(
+        config$output_dir,
+        sprintf("sbc_ecdf_%s.%s", param, config$plot_format)
+      )
+      ggsave(ecdf_file, p_ecdf,
+             width = config$plot_width * 0.5,
+             height = config$plot_height * 0.5,
+             dpi = config$plot_dpi)
+    }
+  }
+  
+  # summary
+  cat("\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat("OVERALL ASSESSMENT\n")
+  cat(rep("=", 78), "\n", sep = "")
+  
+  # count passes/warnings
+  passes <- sum(sapply(all_interpretations, function(x) {
+    grepl("PASS", x[1])
+  }))
+  
+  warnings <- length(parameters) - passes
+  
+  cat(sprintf("Parameters passing: %d/%d (%.1f%%)\n",
+              passes, length(parameters),
+              100 * passes / length(parameters)))
+  
+  if (warnings > 0) {
+    cat(sprintf("Parameters with warnings: %d\n", warnings))
+    cat("\nParameters needing attention:\n")
+    for (param in names(all_interpretations)) {
+      if (!grepl("PASS", all_interpretations[[param]][1])) {
+        cat(sprintf("  - %s\n", param))
+      }
+    }
+  } else {
+    cat("\n✓ All parameters pass validation!\n")
+    cat("  Model appears well-calibrated for this data-generating process.\n")
+  }
+  
+  cat("\n")
+  
+  if (config$save_plots) {
+    cat(sprintf("Plots saved to: %s/\n", config$output_dir))
+  }
+  
+  return(invisible(all_interpretations))
+}
+
+
+#------------------------------------------------------------------------------
+# FUNCTION: MULTI-PANEL OVERVIEW PLOT
+#------------------------------------------------------------------------------
+
+create_overview_plot <- function(rank_matrix, L_draws, 
+                                 parameters = NULL,
+                                 config = PLOT_CONFIG) {
+  #'
+  #' Create a multi-panel overview plot showing all parameters
+  #' 
+  #' @param rank_matrix Matrix of rank statistics
+  #' @param L_draws Number of posterior draws
+  #' @param parameters Parameters to include (NULL = all)
+  #' @param config Plot configuration
+  #' @return Combined ggplot object
+  
+  if (is.null(parameters)) {
+    parameters <- colnames(rank_matrix)
+  }
+  
+  # limit to requested parameters
+  parameters <- intersect(parameters, colnames(rank_matrix))
+  
+  # create individual histograms
+  plot_list <- lapply(parameters, function(param) {
+    ranks <- rank_matrix[, param]
+    plot_rank_histogram(ranks, param, L_draws, config) +
+      theme(plot.subtitle = element_blank())  # Remove subtitle for compact view
+  })
+  
+  # arrange in grid
+  n_params <- length(parameters)
+  n_cols <- ceiling(sqrt(n_params))
+  n_rows <- ceiling(n_params / n_cols)
+  
+  combined_plot <- do.call(grid.arrange, c(plot_list, ncol = n_cols))
+  
+  return(combined_plot)
+}
+
+
+#------------------------------------------------------------------------------
+# MAIN EXECUTION
+#------------------------------------------------------------------------------
+
+if (interactive() || !exists("SKIP_EXECUTION")) {
+  
+  cat("\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat("SBC DIAGNOSTIC PLOTTING\n")
+  cat(rep("=", 78), "\n", sep = "")
+  
+  # load results
+  sbc_data <- load_sbc_results(PLOT_CONFIG$results_file)
+  
+  results <- sbc_data$results
+  config <- sbc_data$config
+  
+  # extract rank matrix
+  rank_matrix <- extract_rank_matrix(results)
+  
+  L_draws <- config$L_posterior_draws
+  
+  cat(sprintf("\nRank matrix dimensions: %d simulations × %d parameters\n",
+              nrow(rank_matrix), ncol(rank_matrix)))
+  
+  # diagnostic report
+  cat("\nGenerating diagnostic report...\n")
+  
+  interpretations <- create_diagnostic_report(
+    rank_matrix = rank_matrix,
+    L_draws = L_draws,
+    parameters = PLOT_CONFIG$parameters_to_plot,
+    config = PLOT_CONFIG
+  )
+  
+  # overview plot
+  cat("\nCreating overview plot...\n")
+  
+  overview <- create_overview_plot(
+    rank_matrix = rank_matrix,
+    L_draws = L_draws,
+    parameters = PLOT_CONFIG$parameters_to_plot,
+    config = PLOT_CONFIG
+  )
+  
+  # Save overview
+  if (PLOT_CONFIG$save_plots) {
+    overview_file <- file.path(
+      PLOT_CONFIG$output_dir,
+      sprintf("sbc_overview.%s", PLOT_CONFIG$plot_format)
+    )
+    
+    ggsave(
+      overview_file, 
+      overview,
+      width = PLOT_CONFIG$plot_width * 1.5,
+      height = PLOT_CONFIG$plot_height * 1.5,
+      dpi = PLOT_CONFIG$plot_dpi
+    )
+    
+    cat(sprintf("Overview plot saved: %s\n", overview_file))
+  }
+  
+  cat("\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat("DIAGNOSTICS COMPLETE\n")
+  cat(rep("=", 78), "\n", sep = "")
+  cat("\nNext steps based on results:\n\n")
+  cat("IF ALL PARAMETERS PASS:\n")
+  cat("  ✓ Model is well-calibrated!\n")
+  cat("  ✓ Ready to analyze real data\n")
+  cat("  ✓ Consider running with more simulations (N=1000) for publication\n\n")
+  
+  cat("IF SOME PARAMETERS FAIL:\n")
+  cat("  1. Check for systematic patterns:\n")
+  cat("     - ∪-shape → Increase uncertainty (check priors, add variance)\n")
+  cat("     - ∩-shape → Reduce uncertainty (check for overparameterization)\n")
+  cat("     - Skewed → Check for bugs in model or simulation code\n")
+  cat("     - Spikes at edges → Increase MCMC iterations or thinning\n\n")
+  cat("  2. Common fixes:\n")
+  cat("     - Increase stan_iter in 02_run_sbc_validation.R\n")
+  cat("     - Adjust priors in simulation or model\n")
+  cat("     - Check for coding errors (esp. in transformations)\n")
+  cat("     - Verify non-centered parameterization is correct\n\n")
+  cat("  3. Re-run validation after fixes\n\n")
+  
+  cat("For detailed interpretation, see:\n")
+  cat("  Talts et al. (2020), Section 4.2\n")
+  cat("  https://arxiv.org/abs/1804.06788\n\n")
+}
+
+
+#------------------------------------------------------------------------------
+# INTERACTIVE EXPLORATION
+#------------------------------------------------------------------------------
+
+explore_parameter <- function(rank_matrix, param_name, L_draws,
+                              config = PLOT_CONFIG) {
+  #'
+  #' interactive exploration of a single parameter
+  #' displays histogram, ECDF, and interpretation
+  #' 
+  #' @param rank_matrix matrix of rank statistics  
+  #' @param param_name parameter to explore
+  #' @param L_draws n of posterior draws
+  #' @param config plot configuration
+  
+  if (!(param_name %in% colnames(rank_matrix))) {
+    stop(sprintf("Parameter '%s' not found. Available: %s",
+                 param_name, paste(colnames(rank_matrix), collapse = ", ")))
+  }
+  
+  ranks <- rank_matrix[, param_name]
+  
+  # print interpretation
+  cat("\n")
+  cat(rep("=", 60), "\n", sep = "")
+  cat(sprintf("EXPLORING: %s\n", param_name))
+  cat(rep("=", 60), "\n", sep = "")
+  
+  interpretation <- interpret_histogram(ranks, param_name, L_draws)
+  for (line in interpretation) {
+    cat(sprintf("%s\n", line))
+  }
+  
+  cat("\n")
+  cat("Rank statistics summary:\n")
+  print(summary(ranks))
+  
+  cat("\n")
+  
+  # plots
+  p_hist <- plot_rank_histogram(ranks, param_name, L_draws, config)
+  p_ecdf <- plot_rank_ecdf(ranks, param_name, L_draws, config)
+  
+  grid.arrange(p_hist, p_ecdf, ncol = 2)
+  
+  return(invisible(list(
+    histogram = p_hist,
+    ecdf = p_ecdf,
+    interpretation = interpretation
+  )))
+}
+
+
+compare_parameters <- function(rank_matrix, param_names, L_draws,
+                               config = PLOT_CONFIG) {
+  #'
+  #' compare rank distributions across multiple parameters
+  #' 
+  #' @param rank_matrix Matrix of rank statistics
+  #' @param param_names Vector of parameter names to compare
+  #' @param L_draws Number of posterior draws
+  #' @param config Plot configuration
+  
+  # prepare data for comparison
+  comparison_data <- do.call(rbind, lapply(param_names, function(param) {
+    data.frame(
+      parameter = param,
+      rank = rank_matrix[, param] / L_draws  # Normalize to [0, 1]
+    )
+  }))
+  
+  # comparison plot
+  p <- ggplot(comparison_data, aes(x = rank, fill = parameter)) +
+    geom_density(alpha = 0.5) +
+    geom_vline(xintercept = 0.5, linetype = "dashed", color = "gray50") +
+    labs(
+      title = "Rank Distribution Comparison",
+      subtitle = "Density plots of normalized ranks",
+      x = "Normalized rank",
+      y = "Density",
+      fill = "Parameter"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  print(p)
+  
+  return(invisible(p))
+}
