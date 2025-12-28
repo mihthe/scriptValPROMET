@@ -1,0 +1,211 @@
+# ============================================================================
+# generate synthetic GIST datasets
+# ============================================================================
+
+library(MASS)
+set.seed(2024)
+
+# ----------------------------------------------------------------------------
+# function: generate synthetic GIST dataset
+# ----------------------------------------------------------------------------
+generate_synthetic_gist <- function(
+    N = 500,                    # total sample size
+    true_params = NULL,         # optional: specify true parameter values
+    heterogeneity = "medium"    # "low", "medium", "high" tumor heterogeneity
+) {
+  
+  # -------------------------------------------------------------------------
+  # 1. set true parameter values
+  # -------------------------------------------------------------------------
+  if (is.null(true_params)) {
+    # parameters based on PROMETheus paper
+    true_params <- list(
+      alpha = 1.75,                            # Intercept
+      beta_bar = 0.40,                         # Mean size coefficient
+      sigma_beta = 2.07,                       # SD of size coefficient across locations
+      gamma_bar = -0.17,                       # Mean surface coefficient
+      sigma_gamma = 0.89,                      # SD of surface coefficient
+      delta = 1.01,                            # Biopsy count coefficient (no NAC)
+      epsilon = -0.90,                         # Biopsy count coefficient (NAC response)
+      sigma_residual = switch(heterogeneity,
+                              "low" = 0.3,
+                              "medium" = 0.5,
+                              "high" = 0.8)
+    )
+  }
+  
+  # -------------------------------------------------------------------------
+  # 2. Simulate Location (Anatomical Site)
+  # -------------------------------------------------------------------------
+  # 1: Colon-rectum, 2: Duodenum, 3: Small intestine, 4: Stomach
+  L_prob <- c(0.10, 0.10, 0.20, 0.60)  # Realistic GIST distribution
+  L <- sample(x = 1:4, prob = L_prob, size = N, replace = TRUE)
+  
+  # -------------------------------------------------------------------------
+  # 3. generate location-Specific coefficients
+  # -------------------------------------------------------------------------
+  # size coefficients (beta) for each location
+  beta_L <- rnorm(4, mean = true_params$beta_bar, sd = true_params$sigma_beta)
+  
+  # surface coefficients (gamma) for each location
+  gamma_L <- rnorm(4, mean = true_params$gamma_bar, sd = true_params$sigma_gamma)
+  
+  # -------------------------------------------------------------------------
+  # 4. simulate tumor size
+  # -------------------------------------------------------------------------
+  # size upon location and underlying biological aggressiveness
+  U <- rnorm(N, mean = 0, sd = 1)  
+  
+  # location-specific size distributions (in mm, standardized later)
+  size_location_means <- c(60, 40, 55, 70)  # Colon, Duod, SI, Stomach
+  size_location_sds <- c(45, 30, 50, 55)
+  
+  size_raw <- rnorm(N, 
+                    mean = size_location_means[L] + 20 * U, 
+                    sd = size_location_sds[L])
+  size_raw <- pmax(size_raw, 10)  # min 10mm
+  
+  # -------------------------------------------------------------------------
+  # 5. simulate biopsy surface area
+  # -------------------------------------------------------------------------
+  # surface upon location (accessibility) and size
+  # logit scale, then to 0-23.5 HPF range
+  
+  logit_surface <- 0 + 
+    gamma_L[L] * 0.5 +  # location effect
+    0.3 * scale(log(size_raw))[,1] +  
+    rnorm(N, 0, 0.8)
+  
+  Su_raw <- plogis(logit_surface) * 23.5
+  Su_raw <- pmax(Su_raw, 0.5)  # min 0.5 HPF
+  
+  # -------------------------------------------------------------------------
+  # 6. simulate true mitotic count on surgical specimen
+  # -------------------------------------------------------------------------
+
+  # standardize predictors as model expects
+  size_std <- scale(size_raw)[,1]
+  Su_std <- scale(Su_raw)[,1]
+  
+  # log-lambda (linear predictor)
+  log_lambda_true <- true_params$alpha + 
+    beta_L[L] * size_std
+  
+  # true expected mitotic count
+  lambda_true <- exp(log_lambda_true)
+  
+  # actual mitotic count (Poisson)
+  m_surg <- rpois(N, lambda = lambda_true)
+  
+  # -------------------------------------------------------------------------
+  # 7. simulate biopsy mitotic count
+  # -------------------------------------------------------------------------
+  # biopsy: surgical specimen but sampling bias
+  
+  # adjusting for smaller surface area
+  lambda_bio <- lambda_true * exp(gamma_L[L] * Su_std)
+  
+  # additional sampling variability
+  lambda_bio_observed <- lambda_bio * exp(rnorm(N, 0, true_params$sigma_residual))
+  
+  m_bio <- rpois(N, lambda = pmax(lambda_bio_observed, 0.1))
+  
+  # -------------------------------------------------------------------------
+  # 8. simulate neoadjuvant t and respose
+  # -------------------------------------------------------------------------
+  # high-risk patients receive NAC
+  risk_score <- scale(size_raw)[,1] + scale(m_bio)[,1]
+  high_risk <- risk_score > quantile(risk_score, 0.7)
+  
+  # response probability inversely related to aggressiveness
+  p_response <- plogis(-U - 0.5)
+  resp_Rx <- rbinom(N, size = 1, prob = p_response) * high_risk
+  
+  # response reduces surgical mitotic count
+  m_surg[resp_Rx == 1] <- rpois(sum(resp_Rx), lambda = 0.5)
+  
+  # create indicator variables
+  n_indicator <- as.integer(1 - resp_Rx)  # no response/no NAC
+  y_indicator <- resp_Rx                   # NAC response
+  
+  # -------------------------------------------------------------------------
+  # 9. create Dataset
+  # -------------------------------------------------------------------------
+  synthetic_data <- data.frame(
+    case_id = 1:N,
+    L = L,
+    location_name = factor(L, 
+                           labels = c("Colon-rectum", "Duodenum", 
+                                      "Small intestine", "Stomach")),
+    size = size_raw,
+    Su = Su_raw,
+    m_bio = m_bio,
+    m_surg = m_surg,
+    received_NAC = high_risk,
+    resp_Rx = resp_Rx,
+    n = n_indicator,
+    y = y_indicator,
+    
+    # hidden truth (for validation only)
+    true_lambda = lambda_true,
+    true_U = U
+  )
+  
+  # -------------------------------------------------------------------------
+  # 10. prepare standardized Data for modeling
+  # -------------------------------------------------------------------------
+  synthetic_data$Si_std <- scale(synthetic_data$size)[,1]
+  synthetic_data$Su_std <- scale(synthetic_data$Su)[,1]
+  synthetic_data$m_bio_std <- scale(synthetic_data$m_bio)[,1]
+  
+  # store scaling parameters
+  scaling_params <- list(
+    size_mean = mean(synthetic_data$size),
+    size_sd = sd(synthetic_data$size),
+    Su_mean = mean(synthetic_data$Su),
+    Su_sd = sd(synthetic_data$Su),
+    m_bio_mean = mean(synthetic_data$m_bio),
+    m_bio_sd = sd(synthetic_data$m_bio)
+  )
+  
+  # -------------------------------------------------------------------------
+  # return results
+  # -------------------------------------------------------------------------
+  return(list(
+    data = synthetic_data,
+    true_params = c(true_params, 
+                    beta_L = list(beta_L),
+                    gamma_L = list(gamma_L)),
+    scaling_params = scaling_params,
+    summary = list(
+      N = N,
+      n_NAC = sum(high_risk),
+      n_response = sum(resp_Rx),
+      mean_m_surg = mean(m_surg),
+      mean_m_bio = mean(m_bio)
+    )
+  ))
+}
+
+# ----------------------------------------------------------------------------
+# function: generate multiple validation datasets
+# ----------------------------------------------------------------------------
+generate_validation_suite <- function(sample_sizes = c(80, 200, 500, 1000)) {
+  
+  validation_suite <- list()
+  
+  for (n in sample_sizes) {
+    cat(sprintf("Generating dataset with N=%d...\n", n))
+    
+    # generate with different heterogeneity levels
+    for (het in c("low", "medium", "high")) {
+      name <- sprintf("N%d_%s", n, het)
+      validation_suite[[name]] <- generate_synthetic_gist(
+        N = n, 
+        heterogeneity = het
+      )
+    }
+  }
+  
+  return(validation_suite)
+}
