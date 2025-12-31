@@ -1,0 +1,45 @@
+# fix_dashboard_cmdstan.R
+# cmdstan-compatible dashboard
+# THIS WORKS!
+
+c.dashboard <- function(fit, warmup = FALSE, plot = TRUE, trank = TRUE) {
+  
+  if (!inherits(fit, "ulam")) {
+    stop("This function expects a ulam object")
+  }
+  
+  cat("\n=== Model Diagnostics ===\n")
+  cat("(Using cmdstan backend)\n\n")
+  
+  if (plot) {
+    # Get the cmdstan fit
+    cstan_fit <- attr(fit, "cstanfit")
+    
+    if (is.null(cstan_fit)) {
+      stop("Cannot find cmdstan fit in ulam object")
+    }
+    
+    # Create diagnostic plots using cmdstan methods
+    par(mfrow = c(2, 2), mar = c(4, 4, 2, 1))
+    
+    # Plot 1: Trace plot for a few key parameters
+    cat("Creating trace plots...\n")
+    pars <- names(coef(fit))
+    for (i in 1:min(4, length(pars))) {
+      plot(cstan_fit$draws(variables = pars[i]), 
+           main = paste("Trace:", pars[i]))
+    }
+    
+    # Reset and do summary
+    par(mfrow = c(1, 1))
+    
+    cat("\n=== Parameter Summary ===\n")
+    print(precis(fit, depth = 2))
+    
+    cat("\n=== Diagnostics Complete ===\n\n")
+  }
+  
+  invisible(cstan_fit)
+}
+
+cat("✓ Simplified cmdstan dashboard loaded\n")
