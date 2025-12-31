@@ -1,0 +1,694 @@
+library(rethinking)
+library(ggplot2)
+library(dplyr)
+library(caret)  
+
+# output directories
+if(!dir.exists("validation_output")) dir.create("validation_output")
+if(!dir.exists("validation_output/figures")) dir.create("validation_output/figures")
+if(!dir.exists("validation_output/results")) dir.create("validation_output/results")
+
+################################################################################
+# SECTION 1: CORE VALIDATION FUNCTIONS
+################################################################################
+
+# All Basic Metrics
+calculate_basic_metrics <- function(predicted, observed) {
+  list(
+    mae = mean(abs(predicted - observed)),
+    rmse = sqrt(mean((predicted - observed)^2)),
+    bias = mean(predicted - observed),
+    r_squared = cor(predicted, observed)^2,
+    n = length(predicted)
+  )
+}
+
+# Miettinen & Lasota Risk Classification
+classify_risk_ML <- function(size_mm, mitotic_count, location) {
+  size_cm <- size_mm / 10
+  
+  # location: 1=esophagus, 2=stomach, 3=duodenum, 4=small intestine, 5=colon-rectum
+  
+  is_gastric <- (location == 2)
+  
+  if(is_gastric) {
+    # gastric GIST risk stratification
+    if(mitotic_count <= 5) {
+      if(size_cm <= 2) return("none")
+      else if(size_cm <= 5) return("very_low")
+      else if(size_cm <= 10) return("low")
+      else return("moderate")
+    } else {  # mitotic_count > 5
+      if(size_cm <= 2) return("none")
+      else if(size_cm <= 5) return("moderate")
+      else return("high")
+    }
+  } else {
+    # non-gastric GIST risk stratification
+    if(mitotic_count <= 5) {
+      if(size_cm <= 2) return("none")
+      else if(size_cm <= 5) return("low")
+      else if(size_cm <= 10) return("moderate")
+      else return("high")
+    } else {  # mitotic_count > 5
+      return("high")  # All non-gastric with high mitosis = high risk
+    }
+  }
+}
+
+# Risk Classification Metrics
+calculate_risk_metrics <- function(predicted_mitosis, observed_mitosis, size, location) {
+  
+  # risk classes
+  predicted_risk <- mapply(classify_risk_ML, 
+                           size_mm = size, 
+                           mitotic_count = predicted_mitosis,
+                           location = location)
+  
+  observed_risk <- mapply(classify_risk_ML,
+                          size_mm = size,
+                          mitotic_count = observed_mitosis,
+                          location = location)
+  
+  # convert to factors
+  risk_levels <- c("none", "very_low", "low", "moderate", "high")
+  predicted_risk <- factor(predicted_risk, levels = risk_levels)
+  observed_risk <- factor(observed_risk, levels = risk_levels)
+  
+  # confusion matrix
+  cm <- confusionMatrix(predicted_risk, observed_risk)
+  
+  list(
+    predicted_risk = predicted_risk,
+    observed_risk = observed_risk,
+    confusion_matrix = cm$table,
+    accuracy = cm$overall["Accuracy"],
+    kappa = cm$overall["Kappa"],
+    confusion_obj = cm
+  )
+}
+
+# Bayesian Coverage
+calculate_coverage <- function(predicted_samples, observed, ci_level = 0.95) {
+  n_patients <- length(observed)
+  covered <- numeric(n_patients)
+  
+  for(i in 1:n_patients) {
+    ci <- HPDI(predicted_samples[, i], prob = ci_level)
+    covered[i] <- (observed[i] >= ci[1]) & (observed[i] <= ci[2])
+  }
+  
+  mean(covered)
+}
+
+################################################################################
+# SECTION 2: DATA LOADING FUNCTIONS
+################################################################################
+
+# load Validation Data from Simulation
+load_simulated_validation_data <- function() {
+  
+  cat("Loading validation data from simulation...\n")
+  
+  # check that simulation has been run
+  if(!exists("sim") | !exists("validation") | !exists("m") | !exists("post")) {
+    stop(paste(
+      "Simulation data not found!\n",
+      "Please run data_simulation.R first:\n",
+      "  source('data_simulation.R')"
+    ))
+  }
+  
+  # extract validation subset
+  validation_sim <- sim[validation, ]
+  
+  # standardization parameters from training data
+  # use the same standardization as training!
+  if(!exists("dat") | !exists("slim_sim")) {
+    stop("Training data objects (dat, slim_sim) not found!")
+  }
+  
+  std_params <- list(
+    m_bio_mean = attr(dat$m_bio, 'scaled:center'),
+    m_bio_sd = attr(dat$m_bio, 'scaled:scale'),
+    Su_mean = attr(dat$Su, 'scaled:center'),
+    Su_sd = attr(dat$Su, 'scaled:scale'),
+    Si_mean = mean(slim_sim$Si),
+    Si_sd = sd(slim_sim$Si)
+  )
+  
+  # create standardized validation dataframe
+  validation_data <- data.frame(
+    patient_id = paste0("SIM_", 1:nrow(validation_sim)),
+    
+    # raw values
+    size_raw = validation_sim$Si,  # This is already standardized in simulation
+    biopsy_mitosis_raw = validation_sim$m_bio,
+    biopsy_surface_raw = validation_sim$Su,
+    location = validation_sim$L,
+    
+    # convert to actual units for interpretation
+    size_mm = validation_sim$Si * std_params$Si_sd + std_params$Si_mean,
+    biopsy_mitosis = validation_sim$m_bio,
+    biopsy_surface_hpf = validation_sim$Su,
+    
+    # ground truth
+    surgery_mitosis = validation_sim$m_sur,
+    
+    # additional info
+    received_therapy = validation_sim$resp_Rx == 1,
+    true_aggressiveness = validation_sim$U,
+    
+    # Data source
+    data_source = "simulation",
+    stringsAsFactors = FALSE
+  )
+  
+  cat(sprintf("✓ Loaded %d simulated validation patients\n", nrow(validation_data)))
+  
+  return(list(
+    data = validation_data,
+    std_params = std_params,
+    model = m,
+    posterior = post
+  ))
+}
+
+# load Validation Data from Real Patients
+load_real_validation_data <- function(data_file, file_type = "csv") {
+  
+  cat("Loading REAL patient data...\n")
+  cat(sprintf("File: %s\n", data_file))
+  
+  # file exists?
+  if(!file.exists(data_file)) {
+    stop(sprintf("File not found: %s", data_file))
+  }
+  
+  # read data
+  if(file_type == "csv") {
+    real_data <- read.csv(data_file, stringsAsFactors = FALSE)
+  } else if(file_type == "excel") {
+    real_data <- readxl::read_excel(data_file)
+  } else if(file_type == "rds") {
+    real_data <- readRDS(data_file)
+  } else {
+    stop("file_type must be 'csv', 'excel', or 'rds'")
+  }
+  
+  # check required columns
+  required_cols <- c("patient_id", "size_mm", "location", 
+                     "biopsy_mitosis", "biopsy_surface_hpf", "surgery_mitosis")
+  
+  missing_cols <- setdiff(required_cols, names(real_data))
+  if(length(missing_cols) > 0) {
+    stop(sprintf("Missing required columns: %s\n", 
+                 paste(missing_cols, collapse = ", ")))
+  }
+  
+  # quality checks
+  real_data <- real_data[complete.cases(real_data[, required_cols]), ]
+  real_data <- real_data[real_data$location %in% 1:5, ]
+  real_data <- real_data[real_data$size_mm > 0, ]
+  real_data <- real_data[real_data$biopsy_mitosis >= 0, ]
+  real_data <- real_data[real_data$surgery_mitosis >= 0, ]
+  
+  cat(sprintf("✓ Loaded %d real patients (after quality checks)\n", nrow(real_data)))
+  
+  # load trained model and standardization parameters
+  if(!file.exists("validation_output/model_posterior.rds") |
+     !file.exists("validation_output/standardization_params.rds")) {
+    
+    # from workspace
+    if(exists("post") & exists("dat") & exists("slim_sim")) {
+      cat("⚠ Using model from current workspace\n")
+      cat("  (Recommended: save model after training)\n")
+      
+      posterior <- post
+      std_params <- list(
+        m_bio_mean = attr(dat$m_bio, 'scaled:center'),
+        m_bio_sd = attr(dat$m_bio, 'scaled:scale'),
+        Su_mean = attr(dat$Su, 'scaled:center'),
+        Su_sd = attr(dat$Su, 'scaled:scale'),
+        Si_mean = mean(slim_sim$Si),
+        Si_sd = sd(slim_sim$Si)
+      )
+    } else {
+      stop(paste(
+        "Model files not found!\n",
+        "Please save after training:\n",
+        "  saveRDS(post, 'validation_output/model_posterior.rds')\n",
+        "  saveRDS(std_params, 'validation_output/standardization_params.rds')"
+      ))
+    }
+  } else {
+    posterior <- readRDS("validation_output/model_posterior.rds")
+    std_params <- readRDS("validation_output/standardization_params.rds")
+    cat("✓ Loaded trained model and standardization parameters\n")
+  }
+  
+  # add standardized versions for model input
+  real_data$size_raw <- (real_data$size_mm - std_params$Si_mean) / std_params$Si_sd
+  real_data$biopsy_mitosis_raw <- real_data$biopsy_mitosis
+  real_data$biopsy_surface_raw <- real_data$biopsy_surface_hpf
+  real_data$data_source <- "real_patients"
+  
+  return(list(
+    data = real_data,
+    std_params = std_params,
+    model = NULL,  # Not needed
+    posterior = posterior
+  ))
+}
+
+################################################################################
+# SECTION 3: PREDICTION FUNCTION
+################################################################################
+
+# predictions with PROMETheus Model
+predict_with_model <- function(size_raw, location, biopsy_mitosis, 
+                               biopsy_surface, posterior, std_params,
+                               include_therapy = FALSE) {
+  
+  # standardize inputs w\ training data statistics
+  m_bio_std <- (biopsy_mitosis - std_params$m_bio_mean) / std_params$m_bio_sd
+  Su_std <- (biopsy_surface - std_params$Su_mean) / std_params$Su_sd
+  
+  # (size already standardized in model)
+  Si_std <- size_raw
+  
+  # calculate log(lambda) using non-centered parameterization
+  n_samples <- length(posterior$a)
+  log_lambda <- numeric(n_samples)
+  
+  # non-centered to centered for prediction
+  # b[L] = sigmab * z_b[L]
+  # e[L] = sigmae * z_e[L]
+  
+  if(!include_therapy) {
+    # standard prediction (no therapy response)
+    for(i in 1:n_samples) {
+      b_centered <- posterior$sigmab[i] * posterior$z_b[i, location]
+      e_centered <- posterior$sigmae[i] * posterior$z_e[i, location]
+      
+      log_lambda[i] <- posterior$a[i] + 
+        b_centered * Si_std +
+        posterior$g[i] * m_bio_std +
+        e_centered * Su_std
+    }
+  } else {
+    # w\ therapy response (uses 'd' instead of 'g')
+    for(i in 1:n_samples) {
+      b_centered <- posterior$sigmab[i] * posterior$z_b[i, location]
+      e_centered <- posterior$sigmae[i] * posterior$z_e[i, location]
+      
+      log_lambda[i] <- posterior$a[i] + 
+        b_centered * Si_std +
+        posterior$d[i] * m_bio_std +
+        e_centered * Su_std
+    }
+  }
+  
+  # convert to counts
+  lambda <- exp(log_lambda)
+  predicted_counts <- rpois(n_samples, lambda = lambda)
+  
+  return(predicted_counts)
+}
+
+# prediction for All Patients
+predict_all_patients <- function(validation_data, posterior, std_params) {
+  
+  n_patients <- nrow(validation_data)
+  n_samples <- length(posterior$a)
+  
+  cat(sprintf("Making predictions for %d patients...\n", n_patients))
+  
+  # storage
+  predicted_samples <- matrix(NA, nrow = n_samples, ncol = n_patients)
+  
+  # predict for each patient
+  for(i in 1:n_patients) {
+    
+    predicted_samples[, i] <- predict_with_model(
+      size_raw = validation_data$size_raw[i],
+      location = validation_data$location[i],
+      biopsy_mitosis = validation_data$biopsy_mitosis[i],
+      biopsy_surface = validation_data$biopsy_surface_hpf[i],
+      posterior = posterior,
+      std_params = std_params,
+      include_therapy = ifelse("received_therapy" %in% names(validation_data),
+                               validation_data$received_therapy[i], FALSE)
+    )
+    
+    if(i %% 10 == 0 | i == n_patients) {
+      cat(sprintf("  Progress: %d/%d\r", i, n_patients))
+    }
+  }
+  
+  cat("\n✓ Predictions complete\n")
+  
+  # calculate summaries
+  predicted_mean <- colMeans(predicted_samples)
+  predicted_median <- apply(predicted_samples, 2, median)
+  predicted_ci_lower <- apply(predicted_samples, 2, function(x) HPDI(x, 0.95)[1])
+  predicted_ci_upper <- apply(predicted_samples, 2, function(x) HPDI(x, 0.95)[2])
+  
+  # add to dataframe
+  validation_data$predicted_mean <- predicted_mean
+  validation_data$predicted_median <- predicted_median
+  validation_data$predicted_ci_lower <- predicted_ci_lower
+  validation_data$predicted_ci_upper <- predicted_ci_upper
+  validation_data$prediction_error <- predicted_mean - validation_data$surgery_mitosis
+  validation_data$abs_error <- abs(validation_data$prediction_error)
+  
+  return(list(
+    data = validation_data,
+    posterior_samples = predicted_samples
+  ))
+}
+
+################################################################################
+# SECTION 4: MAIN VALIDATION FUNCTION
+################################################################################
+
+# Complete Validation Workflow
+#' @param data_source Either "simulation" or "real"
+#' @param real_data_file Path to real data file (if data_source = "real")
+#' @param file_type Type of real data file: "csv", "excel", or "rds"
+#' @param save_results Should results be saved?
+#' @return List with all validation results
+validate_prometheus <- function(data_source = c("simulation", "real"),
+                                real_data_file = NULL,
+                                file_type = "csv",
+                                save_results = TRUE) {
+  
+  data_source <- match.arg(data_source)
+  
+  cat("\n")
+  cat("═══════════════════════════════════════════════════════\n")
+  cat("  PROMETheus MODEL VALIDATION\n")
+  cat(sprintf("  Data Source: %s\n", toupper(data_source)))
+  cat("═══════════════════════════════════════════════════════\n\n")
+  
+  # STEP 1: load data
+  cat("STEP 1: Loading data\n")
+  cat("───────────────────────────────────────────────────────\n")
+  
+  if(data_source == "simulation") {
+    loaded <- load_simulated_validation_data()
+  } else {
+    if(is.null(real_data_file)) {
+      stop("Must provide real_data_file when data_source = 'real'")
+    }
+    loaded <- load_real_validation_data(real_data_file, file_type)
+  }
+  
+  validation_data <- loaded$data
+  std_params <- loaded$std_params
+  posterior <- loaded$posterior
+  
+  cat("\n")
+  
+  # STEP 2: make predictions
+  cat("STEP 2: Making predictions\n")
+  cat("───────────────────────────────────────────────────────\n")
+  
+  prediction_results <- predict_all_patients(validation_data, posterior, std_params)
+  validation_data <- prediction_results$data
+  predicted_samples <- prediction_results$posterior_samples
+  
+  cat("\n")
+  
+  # STEP 3: calculate metrics
+  cat("STEP 3: Calculating validation metrics\n")
+  cat("───────────────────────────────────────────────────────\n")
+  
+  # basic metrics
+  basic_metrics <- calculate_basic_metrics(
+    predicted = validation_data$predicted_mean,
+    observed = validation_data$surgery_mitosis
+  )
+  
+  # risk classification
+  risk_metrics <- calculate_risk_metrics(
+    predicted_mitosis = validation_data$predicted_mean,
+    observed_mitosis = validation_data$surgery_mitosis,
+    size = validation_data$size_mm,
+    location = validation_data$location
+  )
+  
+  # coverage
+  coverage_95 <- calculate_coverage(predicted_samples, 
+                                    validation_data$surgery_mitosis, 0.95)
+  coverage_89 <- calculate_coverage(predicted_samples,
+                                    validation_data$surgery_mitosis, 0.89)
+  
+  # compile all metrics
+  validation_metrics <- list(
+    basic = basic_metrics,
+    risk = risk_metrics,
+    coverage_95 = coverage_95,
+    coverage_89 = coverage_89
+  )
+  
+  # print summary
+  cat("\n")
+  cat("═══════════════════════════════════════════════════════\n")
+  cat("  VALIDATION RESULTS\n")
+  cat("═══════════════════════════════════════════════════════\n\n")
+  
+  cat(sprintf("Sample size: %d patients\n\n", basic_metrics$n))
+  
+  cat("PREDICTION ACCURACY:\n")
+  cat(sprintf("  MAE (Mean Absolute Error):  %.2f mitoses\n", basic_metrics$mae))
+  cat(sprintf("  RMSE (Root Mean Sq Error):  %.2f mitoses\n", basic_metrics$rmse))
+  cat(sprintf("  Bias (systematic error):    %.2f mitoses\n", basic_metrics$bias))
+  cat(sprintf("  R-squared:                  %.3f\n\n", basic_metrics$r_squared))
+  
+  if(basic_metrics$mae < 2) {
+    cat("  ✓✓✓ EXCELLENT accuracy (MAE < 2)\n\n")
+  } else if(basic_metrics$mae < 3) {
+    cat("  ✓✓ GOOD accuracy (MAE < 3)\n\n")
+  } else if(basic_metrics$mae < 5) {
+    cat("  ✓ ACCEPTABLE accuracy (MAE < 5)\n\n")
+  } else {
+    cat("  ✗ POOR accuracy (MAE ≥ 5)\n\n")
+  }
+  
+  cat("RISK CLASSIFICATION:\n")
+  cat(sprintf("  Accuracy: %.1f%%\n", risk_metrics$accuracy * 100))
+  cat(sprintf("  Cohen's Kappa: %.3f\n\n", risk_metrics$kappa))
+  
+  if(risk_metrics$kappa > 0.8) {
+    cat("  ✓✓✓ Almost perfect agreement\n\n")
+  } else if(risk_metrics$kappa > 0.6) {
+    cat("  ✓✓ Substantial agreement\n\n")
+  } else if(risk_metrics$kappa > 0.4) {
+    cat("  ✓ Moderate agreement\n\n")
+  } else {
+    cat("  ✗ Fair to poor agreement\n\n")
+  }
+  
+  cat("UNCERTAINTY CALIBRATION:\n")
+  cat(sprintf("  95%% CI coverage: %.1f%% (ideal: 95%%)\n", coverage_95 * 100))
+  cat(sprintf("  89%% CI coverage: %.1f%% (ideal: 89%%)\n\n", coverage_89 * 100))
+  
+  if(coverage_95 >= 0.93 & coverage_95 <= 0.97) {
+    cat("  ✓✓✓ EXCELLENT calibration\n\n")
+  } else if(coverage_95 >= 0.90 & coverage_95 <= 1.00) {
+    cat("  ✓ ACCEPTABLE calibration\n\n")
+  } else {
+    cat("  ✗ POOR calibration\n\n")
+  }
+  
+  cat("═══════════════════════════════════════════════════════\n\n")
+  
+  # STEP 4: Create plots
+  cat("STEP 4: Creating diagnostic plots\n")
+  cat("───────────────────────────────────────────────────────\n")
+  
+  create_validation_plots(validation_data, predicted_samples, 
+                          data_source, validation_metrics)
+  
+  cat("\n")
+  
+  # STEP 5: save results
+  if(save_results) {
+    cat("STEP 5: Saving results\n")
+    cat("───────────────────────────────────────────────────────\n")
+    
+    timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+    
+    results <- list(
+      validation_data = validation_data,
+      posterior_samples = predicted_samples,
+      metrics = validation_metrics,
+      std_params = std_params,
+      info = list(
+        data_source = data_source,
+        n_patients = nrow(validation_data),
+        date = Sys.Date(),
+        timestamp = timestamp
+      )
+    )
+    
+    # save RDS
+    rds_file <- sprintf("validation_output/results/validation_%s_%s.rds",
+                        data_source, timestamp)
+    saveRDS(results, rds_file)
+    cat(sprintf("✓ Full results: %s\n", rds_file))
+    
+    # Save CSV
+    csv_file <- sprintf("validation_output/results/predictions_%s_%s.csv",
+                        data_source, timestamp)
+    write.csv(validation_data, csv_file, row.names = FALSE)
+    cat(sprintf("✓ Predictions: %s\n", csv_file))
+    
+    cat("\n")
+  }
+  
+  cat("═══════════════════════════════════════════════════════\n")
+  cat("  ✓ VALIDATION COMPLETE\n")
+  cat("═══════════════════════════════════════════════════════\n\n")
+  
+  return(results)
+}
+
+################################################################################
+# SECTION 5: PLOTTING FUNCTIONS
+################################################################################
+
+create_validation_plots <- function(validation_data, predicted_samples, 
+                                    data_source, metrics) {
+  
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  
+  # 1. Calibration plot
+  pdf(sprintf("validation_output/figures/calibration_%s_%s.pdf", 
+              data_source, timestamp),
+      width = 10, height = 8)
+  
+  par(mfrow = c(1, 1), mar = c(5, 5, 4, 2))
+  
+  max_val <- max(c(validation_data$predicted_mean, 
+                   validation_data$surgery_mitosis))
+  
+  plot(validation_data$predicted_mean, validation_data$surgery_mitosis,
+       xlab = "Predicted Mitotic Count (per 5 mm²)",
+       ylab = "Observed Mitotic Count (per 5 mm²)",
+       main = sprintf("Calibration Plot - %s Data", 
+                      ifelse(data_source == "simulation", "Simulated", "Real")),
+       pch = 16, col = validation_data$location, cex = 1.5,
+       xlim = c(0, max_val * 1.1), ylim = c(0, max_val * 1.1))
+  
+  abline(0, 1, col = "red", lwd = 2, lty = 2)
+  
+  # Add CI bars
+  segments(x0 = validation_data$predicted_ci_lower,
+           y0 = validation_data$surgery_mitosis,
+           x1 = validation_data$predicted_ci_upper,
+           y1 = validation_data$surgery_mitosis,
+           col = rgb(0, 0, 0, 0.2))
+  
+  legend("topleft",
+         legend = c(
+           sprintf("MAE = %.2f", metrics$basic$mae),
+           sprintf("RMSE = %.2f", metrics$basic$rmse),
+           sprintf("R² = %.3f", metrics$basic$r_squared),
+           sprintf("Coverage = %.1f%%", metrics$coverage_95 * 100),
+           "Perfect prediction"
+         ),
+         lty = c(0, 0, 0, 0, 2),
+         col = c("black", "black", "black", "black", "red"),
+         lwd = c(0, 0, 0, 0, 2),
+         bty = "n", cex = 1.1)
+  
+  legend("bottomright",
+         legend = c("Esophagus", "Stomach", "Duodenum", 
+                    "Small Intestine", "Colon-Rectum")[unique(validation_data$location)],
+         col = unique(validation_data$location),
+         pch = 16, title = "Location", bty = "n")
+  
+  dev.off()
+  
+  cat(sprintf("✓ Calibration plot saved\n"))
+  
+  # 2. residual plot
+  pdf(sprintf("validation_output/figures/residuals_%s_%s.pdf",
+              data_source, timestamp),
+      width = 10, height = 8)
+  
+  par(mfrow = c(1, 1), mar = c(5, 5, 4, 2))
+  
+  plot(validation_data$predicted_mean, validation_data$prediction_error,
+       xlab = "Predicted Mitotic Count",
+       ylab = "Residual (Predicted - Observed)",
+       main = "Residual Plot",
+       pch = 16, col = validation_data$location, cex = 1.5)
+  
+  abline(h = 0, col = "red", lwd = 2, lty = 2)
+  abline(h = c(-2, 2), col = "orange", lwd = 1, lty = 3)
+  
+  dev.off()
+  
+  cat(sprintf("✓ Residual plot saved\n"))
+  
+  # 3. confusion matrix
+  pdf(sprintf("validation_output/figures/confusion_matrix_%s_%s.pdf",
+              data_source, timestamp),
+      width = 10, height = 8)
+  
+  par(mar = c(5, 5, 4, 2))
+  
+  # confusion matrix to proportions
+  cm <- metrics$risk$confusion_matrix
+  cm_prop <- prop.table(cm, margin = 1) * 100
+  
+  # plot
+  image(1:ncol(cm), 1:nrow(cm), t(cm_prop),
+        col = colorRampPalette(c("white", "steelblue"))(20),
+        xlab = "Observed Risk", ylab = "Predicted Risk",
+        main = "Risk Classification Confusion Matrix (%)",
+        axes = FALSE)
+  
+  axis(1, at = 1:ncol(cm), labels = colnames(cm), las = 2)
+  axis(2, at = 1:nrow(cm), labels = rownames(cm), las = 1)
+  
+  # add text
+  for(i in 1:nrow(cm)) {
+    for(j in 1:ncol(cm)) {
+      text(j, i, sprintf("%d\n(%.0f%%)", cm[i,j], cm_prop[i,j]),
+           col = ifelse(cm_prop[i,j] > 50, "white", "black"),
+           cex = 1.2, font = 2)
+    }
+  }
+  
+  dev.off()
+  
+  cat(sprintf("✓ Confusion matrix saved\n"))
+}
+
+################################################################################
+# END OF UNIFIED VALIDATION SCRIPT
+################################################################################
+
+cat("\n✓ Unified validation script loaded\n\n")
+cat("USAGE:\n")
+cat("──────────────────────────────────────\n")
+cat("For simulated data (NOW):\n")
+cat("  1. source('data_simulation.R')\n")
+cat("  2. results <- validate_prometheus(data_source = 'simulation')\n\n")
+cat("For real data (LATER):\n")
+cat("  results <- validate_prometheus(\n")
+cat("    data_source = 'real',\n")
+cat("    real_data_file = 'my_patients.csv'\n")
+cat("  )\n")
+cat("──────────────────────────────────────\n\n")
+
+#######################
+source("script2a.R")  # bridge
+source("data_simulation.R")  # simulated data
+
+# load the validation script
+source("script2c.R")
