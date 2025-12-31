@@ -687,7 +687,8 @@ cat("  )\n")
 cat("──────────────────────────────────────\n\n")
 
 #######################
-source("script2a.R")  # bridge
+# load simulation script 
+source("script2a.R")  # bridge 
 source("data_simulation.R")  # simulated data
 
 # load the validation script
