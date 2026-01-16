@@ -1,0 +1,341 @@
+## access risk function outside of app?
+
+# plots functions template
+plot_risk_accuracy_comprehensive <- function(results, save_pdf = FALSE, 
+                                             filename = "risk_accuracy_plots.pdf") {
+  
+  if (save_pdf) {
+    pdf(filename, width = 12, height = 10)
+  }
+  
+  # layout for 6 plots
+  layout(matrix(c(1,2,3,4,5,6), nrow = 3, ncol = 2, byrow = TRUE))
+  par(mar = c(5, 4, 4, 2) + 0.1)
+  
+  # ----------------------------------------------------------------
+  # 1: Confusion Matrix - Model Predictions
+  # ----------------------------------------------------------------
+  conf_model <- table(
+    Predicted = results$risk_predicted,
+    True = results$risk_true
+  )
+  
+  # color palette
+  max_val <- max(conf_model)
+  colors <- colorRampPalette(c("white", "navy"))(max_val + 1)
+  
+  # empty plot
+  plot(NULL, xlim = c(0.5, ncol(conf_model) + 0.5), 
+       ylim = c(0.5, nrow(conf_model) + 0.5),
+       xlab = "True Risk Class", ylab = "Predicted Risk Class",
+       main = "Model Predictions: Confusion Matrix",
+       xaxt = "n", yaxt = "n", asp = 1)
+  
+  # grid
+  for (i in 1:nrow(conf_model)) {
+    for (j in 1:ncol(conf_model)) {
+      rect(j - 0.45, i - 0.45, j + 0.45, i + 0.45, 
+           col = colors[conf_model[i, j] + 1], border = "white", lwd = 2)
+      text(j, i, conf_model[i, j], cex = 1.5, font = 2, 
+           col = ifelse(conf_model[i, j] > max_val/2, "white", "black"))
+    }
+  }
+  
+  # axis labels
+  axis(1, at = 1:ncol(conf_model), labels = colnames(conf_model), las = 2)
+  axis(2, at = 1:nrow(conf_model), labels = rownames(conf_model), las = 2)
+  
+  # diagonal line
+  segments(0.5, 0.5, ncol(conf_model) + 0.5, nrow(conf_model) + 0.5, 
+           col = "red", lwd = 3, lty = 2)
+  
+  # ----------------------------------------------------------------
+  # 2: Confusion Matrix - Biopsy
+  # ----------------------------------------------------------------
+  conf_biopsy <- table(
+    Biopsy = results$risk_biopsy,
+    True = results$risk_true
+  )
+  
+  max_val_bio <- max(conf_biopsy)
+  colors_bio <- colorRampPalette(c("white", "darkred"))(max_val_bio + 1)
+  
+  plot(NULL, xlim = c(0.5, ncol(conf_biopsy) + 0.5), 
+       ylim = c(0.5, nrow(conf_biopsy) + 0.5),
+       xlab = "True Risk Class", ylab = "Biopsy Risk Class",
+       main = "Biopsy-Based: Confusion Matrix",
+       xaxt = "n", yaxt = "n", asp = 1)
+  
+  for (i in 1:nrow(conf_biopsy)) {
+    for (j in 1:ncol(conf_biopsy)) {
+      rect(j - 0.45, i - 0.45, j + 0.45, i + 0.45, 
+           col = colors_bio[conf_biopsy[i, j] + 1], border = "white", lwd = 2)
+      text(j, i, conf_biopsy[i, j], cex = 1.5, font = 2,
+           col = ifelse(conf_biopsy[i, j] > max_val_bio/2, "white", "black"))
+    }
+  }
+  
+  axis(1, at = 1:ncol(conf_biopsy), labels = colnames(conf_biopsy), las = 2)
+  axis(2, at = 1:nrow(conf_biopsy), labels = rownames(conf_biopsy), las = 2)
+  segments(0.5, 0.5, ncol(conf_biopsy) + 0.5, nrow(conf_biopsy) + 0.5, 
+           col = "red", lwd = 3, lty = 2)
+  
+  # ----------------------------------------------------------------
+  # 3: Overall Accuracy Comparison
+  # ----------------------------------------------------------------
+  acc_model <- mean(results$risk_predicted == results$risk_true) * 100
+  acc_biopsy <- mean(results$risk_biopsy == results$risk_true) * 100
+  
+  barplot(c(acc_biopsy, acc_model), 
+          names.arg = c("Biopsy-Based", "Model Prediction"),
+          col = c("coral", "lightgreen"),
+          ylim = c(0, 100),
+          ylab = "Accuracy (%)",
+          main = "Overall Accuracy Comparison",
+          border = "black", lwd = 2)
+  
+  abline(h = 50, lty = 2, col = "gray40", lwd = 2)
+  
+  # percentage labels on bars
+  text(0.7, acc_biopsy + 5, sprintf("%.1f%%", acc_biopsy), 
+       font = 2, cex = 1.3)
+  text(1.9, acc_model + 5, sprintf("%.1f%%", acc_model), 
+       font = 2, cex = 1.3)
+  
+  # improvement annotation
+  arrows(1.9, acc_biopsy, 1.9, acc_model, 
+         code = 3, angle = 20, length = 0.1, lwd = 2, col = "darkgreen")
+  text(2.3, (acc_biopsy + acc_model)/2, 
+       sprintf("+%.1f%%", acc_model - acc_biopsy),
+       col = "darkgreen", font = 2, cex = 1.1)
+  
+  # ----------------------------------------------------------------
+  # 4: Accuracy by Risk Class
+  # ----------------------------------------------------------------
+  risk_levels <- levels(results$risk_true)
+  acc_by_class_model <- numeric(length(risk_levels))
+  acc_by_class_biopsy <- numeric(length(risk_levels))
+  n_per_class <- numeric(length(risk_levels))
+  
+  for (i in seq_along(risk_levels)) {
+    idx <- results$risk_true == risk_levels[i]
+    n_per_class[i] <- sum(idx)
+    if (n_per_class[i] > 0) {
+      acc_by_class_model[i] <- mean(results$risk_predicted[idx] == risk_levels[i]) * 100
+      acc_by_class_biopsy[i] <- mean(results$risk_biopsy[idx] == risk_levels[i]) * 100
+    } else {
+      acc_by_class_model[i] <- NA
+      acc_by_class_biopsy[i] <- NA
+    }
+  }
+  
+  # grouped barplot
+  acc_matrix <- rbind(acc_by_class_biopsy, acc_by_class_model)
+  colnames(acc_matrix) <- risk_levels
+  
+  bp <- barplot(acc_matrix, beside = TRUE,
+                col = c("coral", "lightgreen"),
+                ylim = c(0, 110),
+                ylab = "Accuracy (%)",
+                main = "Accuracy by True Risk Class",
+                border = "black", lwd = 2,
+                las = 2)
+  
+  abline(h = 50, lty = 2, col = "gray40", lwd = 1)
+  
+  # sample sizes
+  text(colMeans(bp), 105, sprintf("n=%d", n_per_class), cex = 0.9, font = 2)
+  
+  # legend
+  legend("topright", 
+         legend = c("Biopsy", "Model"),
+         fill = c("coral", "lightgreen"),
+         border = "black",
+         bty = "n", cex = 1.1)
+  
+  # ----------------------------------------------------------------
+  # 5: Prediction Confidence Distribution
+  # ----------------------------------------------------------------
+  correct <- results$risk_predicted == results$risk_true
+  
+  # Overall histogram
+  hist(results$risk_pred_prob * 100, 
+       breaks = 20,
+       col = "steelblue",
+       border = "white",
+       xlab = "Prediction Confidence (%)",
+       ylab = "Frequency",
+       main = "Model Prediction Confidence Distribution",
+       xlim = c(0, 100))
+  
+  abline(v = 50, col = "red", lwd = 3, lty = 2)
+  
+  # vertical line for mean confidence
+  mean_conf <- mean(results$risk_pred_prob) * 100
+  abline(v = mean_conf, col = "darkgreen", lwd = 2, lty = 1)
+  
+  legend("topleft",
+         legend = c("50% threshold", 
+                    sprintf("Mean = %.1f%%", mean_conf)),
+         col = c("red", "darkgreen"),
+         lty = c(2, 1),
+         lwd = c(3, 2),
+         bty = "n", cex = 1.1)
+  
+  # text annotation
+  text(75, max(hist(results$risk_pred_prob * 100, plot = FALSE)$counts) * 0.9,
+       sprintf("%.1f%% of predictions\nhave >50%% confidence", 
+               mean(results$risk_pred_prob > 0.5) * 100),
+       cex = 1.1, font = 2)
+  
+  # ----------------------------------------------------------------
+  # 6: Confidence by Correctness
+  # ----------------------------------------------------------------
+  boxplot(risk_pred_prob * 100 ~ correct, data = results,
+          names = c("Incorrect", "Correct"),
+          col = c("coral", "lightgreen"),
+          ylab = "Prediction Confidence (%)",
+          main = "Confidence: Correct vs Incorrect Predictions",
+          border = "black", lwd = 2,
+          notch = TRUE)
+  
+  abline(h = 50, lty = 2, col = "gray40", lwd = 2)
+  
+  # sample sizes
+  n_incorrect <- sum(!correct)
+  n_correct <- sum(correct)
+  text(1, 95, sprintf("n=%d", n_incorrect), font = 2, cex = 1.1)
+  text(2, 95, sprintf("n=%d", n_correct), font = 2, cex = 1.1)
+  
+  # means
+  mean_incorrect <- mean(results$risk_pred_prob[!correct]) * 100
+  mean_correct <- mean(results$risk_pred_prob[correct]) * 100
+  
+  points(c(1, 2), c(mean_incorrect, mean_correct), 
+         pch = 18, cex = 2, col = "darkblue")
+  
+  legend("bottomright",
+         legend = c("Mean confidence", "Median"),
+         pch = c(18, NA),
+         lty = c(NA, 1),
+         lwd = c(NA, 2),
+         col = c("darkblue", "black"),
+         bty = "n", cex = 1.1)
+  
+  if (save_pdf) {
+    dev.off()
+    cat("\nPlots saved to:", filename, "\n")
+  }
+  
+  par(mfrow = c(1, 1))
+}
+
+
+plot_risk_upgrading_downgrading <- function(results) {
+  
+  # risk changes
+  risk_levels <- c("none", "very low", "low", "moderate", "high")
+  results$pred_numeric <- as.numeric(factor(results$risk_predicted, levels = risk_levels))
+  results$true_numeric <- as.numeric(factor(results$risk_true, levels = risk_levels))
+  results$bio_numeric <- as.numeric(factor(results$risk_biopsy, levels = risk_levels))
+  
+  results$model_change <- results$pred_numeric - results$true_numeric
+  results$biopsy_change <- results$bio_numeric - results$true_numeric
+  
+  par(mfrow = c(1, 2), mar = c(5, 4, 4, 2) + 0.1)
+  
+  # 1: Model prediction changes
+  barplot(table(factor(results$model_change, levels = -4:4)),
+          col = c(rep("coral", 4), "lightgreen", rep("lightblue", 4)),
+          main = "Model: Risk Class Differences",
+          xlab = "Predicted - True (risk levels)",
+          ylab = "Frequency",
+          border = "black", lwd = 2)
+  abline(v = 5, lwd = 3, lty = 2, col = "darkgreen")
+  legend("topright", 
+         legend = c("Underestimated", "Correct", "Overestimated"),
+         fill = c("coral", "lightgreen", "lightblue"),
+         bty = "n")
+  
+  # 2: Biopsy prediction changes
+  barplot(table(factor(results$biopsy_change, levels = -4:4)),
+          col = c(rep("coral", 4), "lightgreen", rep("lightblue", 4)),
+          main = "Biopsy: Risk Class Differences",
+          xlab = "Biopsy - True (risk levels)",
+          ylab = "Frequency",
+          border = "black", lwd = 2)
+  abline(v = 5, lwd = 3, lty = 2, col = "darkgreen")
+  
+  par(mfrow = c(1, 1))
+}
+
+plot_high_risk_detection <- function(results) {
+  
+  # Binary: high-risk vs not high-risk
+  high_true <- results$risk_true == "high"
+  high_pred <- results$risk_predicted == "high"
+  high_bio <- results$risk_biopsy == "high"
+  
+  # 2x2 tables
+  tab_model <- table(Predicted = high_pred, True = high_true)
+  tab_biopsy <- table(Biopsy = high_bio, True = high_true)
+  
+  par(mfrow = c(1, 2), mar = c(5, 5, 4, 2))
+  
+  # Model
+  plot(NULL, xlim = c(0, 2), ylim = c(0, 2),
+       xlab = "True", ylab = "Model Predicted",
+       main = "High-Risk Detection: Model",
+       xaxt = "n", yaxt = "n", asp = 1)
+  
+  # boxes
+  rect(c(0, 1, 0, 1), c(0, 0, 1, 1), c(1, 2, 1, 2), c(1, 1, 2, 2),
+       col = c("lightgreen", "orange", "orange", "pink"),
+       border = "black", lwd = 3)
+  
+  # labels
+  text(c(0.5, 1.5, 0.5, 1.5), c(0.5, 0.5, 1.5, 1.5),
+       c(sprintf("TN\n%d", tab_model[1,1]),
+         sprintf("FP\n%d", tab_model[2,1]),
+         sprintf("FN\n%d", tab_model[1,2]),
+         sprintf("TP\n%d", tab_model[2,2])),
+       cex = 2, font = 2)
+  
+  axis(1, at = c(0.5, 1.5), labels = c("Not High", "High"))
+  axis(2, at = c(0.5, 1.5), labels = c("Not High", "High"), las = 2)
+  
+  # metrics
+  sens <- tab_model[2,2] / sum(tab_model[,2]) * 100
+  spec <- tab_model[1,1] / sum(tab_model[,1]) * 100
+  
+  text(1, -0.3, sprintf("Sensitivity: %.1f%%\nSpecificity: %.1f%%", sens, spec),
+       cex = 1.1, font = 2, xpd = TRUE)
+  
+  # Biopsy
+  plot(NULL, xlim = c(0, 2), ylim = c(0, 2),
+       xlab = "True", ylab = "Biopsy",
+       main = "High-Risk Detection: Biopsy",
+       xaxt = "n", yaxt = "n", asp = 1)
+  
+  rect(c(0, 1, 0, 1), c(0, 0, 1, 1), c(1, 2, 1, 2), c(1, 1, 2, 2),
+       col = c("lightgreen", "orange", "orange", "pink"),
+       border = "black", lwd = 3)
+  
+  text(c(0.5, 1.5, 0.5, 1.5), c(0.5, 0.5, 1.5, 1.5),
+       c(sprintf("TN\n%d", tab_biopsy[1,1]),
+         sprintf("FP\n%d", tab_biopsy[2,1]),
+         sprintf("FN\n%d", tab_biopsy[1,2]),
+         sprintf("TP\n%d", tab_biopsy[2,2])),
+       cex = 2, font = 2)
+  
+  axis(1, at = c(0.5, 1.5), labels = c("Not High", "High"))
+  axis(2, at = c(0.5, 1.5), labels = c("Not High", "High"), las = 2)
+  
+  sens_bio <- tab_biopsy[2,2] / sum(tab_biopsy[,2]) * 100
+  spec_bio <- tab_biopsy[1,1] / sum(tab_biopsy[,1]) * 100
+  
+  text(1, -0.3, sprintf("Sensitivity: %.1f%%\nSpecificity: %.1f%%", sens_bio, spec_bio),
+       cex = 1.1, font = 2, xpd = TRUE)
+  
+  par(mfrow = c(1, 1))
+}
