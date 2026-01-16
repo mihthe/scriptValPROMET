@@ -1,0 +1,94 @@
+# proof of concept plots
+# CHANGE TO YOUR VARIABLES!
+
+par(mfrow = c(2, 3), mar = c(4, 4, 2, 1))
+
+# histogram of residuals
+hist(residuals_median, 
+     breaks = 30,
+     freq = FALSE,
+     main = "Distribution of Residuals",
+     xlab = "Residual (True - Predicted)",
+     ylab = "Density",
+     col = alpha("skyblue", 0.6),
+     border = "darkblue")
+abline(v = 0, col = "red", lwd = 2, lty = 2)
+abline(v = mean(residuals_median), col = "blue", lwd = 2)
+legend("topright", 
+       legend = c("Zero error", "Mean error"),
+       col = c("red", "blue"),
+       lty = c(2, 1),
+       lwd = 2,
+       cex = 0.8)
+
+# Residuals vs Predicted
+plot(predicted_median, residuals_median,
+     main = "Residuals vs Predicted",
+     xlab = "Predicted Mitotic Count",
+     ylab = "Residual (True - Predicted)",
+     pch = 16,
+     col = alpha("black", 0.5))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+lines(lowess(predicted_median, residuals_median), col = "blue", lwd = 2)
+legend("topright", 
+       legend = c("Zero error", "Trend"),
+       col = c("red", "blue"),
+       lty = c(2, 1),
+       lwd = 2,
+       cex = 0.8)
+
+# Predicted vs True 
+plot(validation_data$m_surg_TRUE, predicted_median,
+     main = "Predicted vs True",
+     xlab = "TRUE Mitotic Count (Surgical Specimen)",
+     ylab = "PREDICTED Mitotic Count",
+     pch = 16,
+     col = alpha("darkgreen", 0.5),
+     xlim = range(c(validation_data$m_surg_TRUE, predicted_median)),
+     ylim = range(c(validation_data$m_surg_TRUE, predicted_median)))
+abline(0, 1, col = "red", lwd = 2, lty = 2)
+legend("topleft", 
+       legend = "Perfect prediction",
+       col = "red",
+       lty = 2,
+       lwd = 2,
+       cex = 0.8)
+
+# Residuals vs True
+plot(validation_data$m_surg_TRUE, residuals_median,
+     main = "Residuals vs True Value",
+     xlab = "TRUE Mitotic Count",
+     ylab = "Residual (True - Predicted)",
+     pch = 16,
+     col = alpha("purple", 0.5))
+abline(h = 0, col = "red", lwd = 2, lty = 2)
+lines(lowess(validation_data$m_surg_TRUE, residuals_median), 
+      col = "blue", lwd = 2)
+
+# Absolute error vs True
+abs_error <- abs(residuals_median)
+plot(validation_data$m_surg_TRUE, abs_error,
+     main = "Absolute Error vs True",
+     xlab = "TRUE Mitotic Count",
+     ylab = "Absolute Error",
+     pch = 16,
+     col = alpha("orange", 0.5))
+lines(lowess(validation_data$m_surg_TRUE, abs_error), 
+      col = "blue", lwd = 2)
+
+# Coverage of prediction intervals
+coverage <- numeric(N_validation)
+for(i in 1:N_validation) {
+  coverage[i] <- (validation_data$m_surg_TRUE[i] >= predicted_89hpdi[i, 1] &
+                    validation_data$m_surg_TRUE[i] <= predicted_89hpdi[i, 2])
+}
+
+barplot(c(sum(coverage), sum(!coverage)),
+        names.arg = c("Within 89% HPDI", "Outside 89% HPDI"),
+        main = "Prediction Interval Coverage",
+        ylab = "Number of Cases",
+        col = c("green", "red"),
+        ylim = c(0, N_validation))
+text(x = c(0.7, 1.9), y = c(sum(coverage), sum(!coverage)) + 5,
+     labels = c(paste0(round(100*mean(coverage), 1), "%"),
+                paste0(round(100*mean(!coverage), 1), "%")))
