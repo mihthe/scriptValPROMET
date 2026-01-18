@@ -43,7 +43,8 @@ hist(resid, freq = FALSE,
      xlab = "Residual (True - Predicted)",
      col = scales::alpha("steelblue", 0.5),
      border = "white",
-     breaks = 50)
+     breaks = 50,
+     xlim = c(-10, 20))
 abline(v = 0, col = "red", lwd = 2, lty = 2)
 abline(v = resid_hpdi, col = "darkblue", lwd = 2, lty = 3)
 legend("topright", 
