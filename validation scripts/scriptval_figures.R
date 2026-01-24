@@ -163,13 +163,18 @@ create_figure2a_validation <- function(validation_data, predicted_samples) {
   # location colors
   location_colors <- c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00")
   
+  N <- nrow(plot_data_surface)
+  
   # plot
   jpeg("validation_output1/figures/figure2a_validation.jpg", 
-       units = "in", width = 16, height = 10, res = 400)
+       units = "in", width = 16, height = 12, res = 400)
   
-  par(mfrow = c(2, 1), mar = c(10, 8, 6, 4), xaxs = "r", yaxs = "r")
+  # separate plot and legend areas
+  layout(matrix(c(1, 2, 3), nrow = 3, ncol = 1), heights = c(4, 4, 1.2))
   
   ### PANEL A: Signed difference ###
+  par(mar = c(5, 9, 4, 6))
+  
   plot(plot_data_surface$x_position, plot_data_surface$difference, 
        type = "h",
        lwd = 2.5,
@@ -177,7 +182,7 @@ create_figure2a_validation <- function(validation_data, predicted_samples) {
                     alpha("#2ECC71", 0.6), 
                     alpha("#E74C3C", 0.6)),
        xlab = "", 
-       ylab = "Signed Difference (Predicted - Observed)",
+       ylab = "",  # add this manually with mtext for better control
        main = "A) Prediction Error by Biopsy Surface Area",
        bty = "l",
        ylim = range(plot_data_surface$difference) * 1.15,
@@ -185,6 +190,10 @@ create_figure2a_validation <- function(validation_data, predicted_samples) {
        cex.lab = 1.4,
        cex.main = 1.6,
        cex.axis = 1.2)
+  
+  # add y-axis label with mtext for precise position
+  mtext("Signed Difference\n(Predicted - Observed)", 
+        side = 2, line = 5, cex = 1.2)
   
   abline(h = 0, lty = 1, col = "black", lwd = 2)
   
@@ -200,27 +209,24 @@ create_figure2a_validation <- function(validation_data, predicted_samples) {
        bty = "n")
   
   axis(4, col = "navyblue", col.axis = "navyblue", cex.axis = 1.2)
-  mtext("Biopsy Surface (HPF)", side = 4, line = 3, cex = 1.2, col = "navyblue")
+  mtext("Biopsy Surface (HPF)", side = 4, line = 3.5, cex = 1.1, col = "navyblue")
   
+  # x-axis shows position (1 to N), with patient ID as secondary info
   axis(1, at = plot_data_surface$x_position, 
-       labels = plot_data_surface$patient_id,
-       las = 2, cex.axis = 0.6)
-  mtext("Patient ID", side = 1, line = 8, cex = 1.2)
+       labels = plot_data_surface$x_position,  # show position 1, 2, 3... (ordered by surface)
+       las = 1, cex.axis = 0.7)
+  mtext("Patients (ordered by increasing biopsy surface)", side = 1, line = 3, cex = 1.1)
   
-  legend("topleft",
-         legend = c("Overestimation", "Underestimation", "Biopsy surface"),
-         col = c("#2ECC71", "#E74C3C", "navyblue"),
-         lwd = c(3, 3, 3),
-         lty = c(1, 1, 1),
-         cex = 1.2, bty = "n")
   
   ### PANEL B: Absolute difference ###
+  par(mar = c(5, 9, 4, 6))
+  
   plot(plot_data_surface$x_position, plot_data_surface$abs_difference, 
        type = "h",
        lwd = 2.5,
        col = alpha("steelblue", 0.6),
        xlab = "", 
-       ylab = "Absolute Difference |Predicted - Observed|",
+       ylab = "",
        main = "B) Magnitude of Prediction Error",
        bty = "l",
        ylim = c(0, max(plot_data_surface$abs_difference) * 1.15),
@@ -229,11 +235,14 @@ create_figure2a_validation <- function(validation_data, predicted_samples) {
        cex.main = 1.6,
        cex.axis = 1.2)
   
-  # Mean absolute error line
-  abline(h = mean(plot_data_surface$abs_difference), 
-         col = "red", lwd = 2.5, lty = 2)
+  mtext("Absolute Difference\n|Predicted - Observed|", 
+        side = 2, line = 5, cex = 1.2)
   
-  # Add surface as line
+  # mean absolute error line
+  mae_value <- mean(plot_data_surface$abs_difference)
+  abline(h = mae_value, col = "red", lwd = 2.5, lty = 2)
+  
+  # add surface as line
   par(new = TRUE)
   plot(plot_data_surface$x_position, plot_data_surface$surface,
        type = "l",
@@ -245,22 +254,44 @@ create_figure2a_validation <- function(validation_data, predicted_samples) {
        bty = "n")
   
   axis(4, col = "navyblue", col.axis = "navyblue", cex.axis = 1.2)
-  mtext("Biopsy Surface (HPF)", side = 4, line = 3, cex = 1.2, col = "navyblue")
+  mtext("Biopsy Surface (HPF)", side = 4, line = 3.5, cex = 1.1, col = "navyblue")
   
   axis(1, at = plot_data_surface$x_position, 
-       labels = plot_data_surface$patient_id,
-       las = 2, cex.axis = 0.6)
-  mtext("Patient ID", side = 1, line = 8, cex = 1.2)
+       labels = plot_data_surface$x_position,
+       las = 1, cex.axis = 0.7)
+  mtext("Patients (ordered by increasing biopsy surface)", side = 1, line = 3, cex = 1.1)
   
-  legend("topleft",
-         legend = c(sprintf("MAE = %.2f mitoses", 
-                            mean(plot_data_surface$abs_difference)),
+  
+  ### PANEL C: LEGEND AREA (separate from plots) ###
+  par(mar = c(0, 2, 0, 2))
+  
+  plot.new()
+  
+  # legend for Panel A (sx)
+  legend("left",
+         title = expression(bold("Panel A - Direction")),
+         legend = c("Overestimation (model > actual)", 
+                    "Underestimation (model < actual)", 
                     "Biopsy surface"),
-         col = c("red", "navyblue"),
-         lwd = c(2.5, 3),
-         lty = c(2, 1),
-         cex = 1.2, bty = "n")
+         col = c("#2ECC71", "#E74C3C", "navyblue"),
+         lwd = c(3, 3, 3),
+         lty = c(1, 1, 1),
+         cex = 1.1, 
+         bty = "n",
+         horiz = FALSE)
   
+  # legend for Panel B (dx)
+  legend("right",
+         title = expression(bold("Panel B - Magnitude")),
+         legend = c(sprintf("MAE = %.2f mitoses", mae_value),
+                    "Absolute error",
+                    "Biopsy surface"),
+         col = c("red", "steelblue", "navyblue"),
+         lwd = c(2.5, 3, 3),
+         lty = c(2, 1, 1),
+         cex = 1.1, 
+         bty = "n",
+         horiz = FALSE)
   dev.off()
   
   cat("✓ Figure 2A saved: validation_output1/figures/figure2a_validation.jpg\n")
@@ -300,7 +331,12 @@ create_figure2b_validation <- function(validation_data, predicted_samples) {
   jpeg("validation_output1/figures/figure2b_validation.jpg", 
        units = "in", width = 18, height = 10, res = 400)
   
-  par(mar = c(8, 8, 4, 4))
+  # separate regions for plot and legend
+  # matrix: row 1 = plot (height 4), row 2 = legend (height 1)
+  layout(matrix(c(1, 2), nrow = 2, ncol = 1), heights = c(4, 1))
+  
+  # PANEL 1: Main plot
+  par(mar = c(6, 6, 4, 2))
   
   plot(plot_data_ordered$x_position, plot_data_ordered$difference, 
        type = "n",
@@ -350,26 +386,37 @@ create_figure2b_validation <- function(validation_data, predicted_samples) {
        col.ticks = "darkgreen")
   mtext("Tumor Size (mm)", side = 1, line = 4, cex = 1.3, col = "darkgreen")
   
-  # legends
-  legend("topright", 
+  # PANEL 2: Legend area
+  par(mar = c(1, 6, 1, 2))
+  
+  # empty plot for legend
+  plot.new()
+  
+  # legend 1: Prediction Direction (left side)
+  legend("left",
          title = expression(bold("Prediction Direction")),
          legend = c("Overestimation (λ > y)", 
                     "Underestimation (λ < y)", 
                     "Perfect prediction"),
          col = c("#2ECC71", "#E74C3C", "black"),
-         lwd = 3, cex = 1.2, bty = "n")
+         lwd = 3, 
+         cex = 1.2, 
+         bty = "n",
+         horiz = FALSE)
   
-  legend("topleft",
+  # legend 2: Tumor Location (right side)
+  legend("right",
          title = expression(bold("Tumor Location")),
          legend = location_names[unique(plot_data_ordered$location)],
          fill = alpha(location_colors[unique(plot_data_ordered$location)], 0.2),
          border = "black",
          cex = 1.1,
-         bty = "n")
+         bty = "n",
+         horiz = FALSE)
   
   dev.off()
   
-  cat("✓ Figure 2B saved: validation_output1/figures/figure2b_validation.jpg\n")
+  cat("✓ Figure 2B (v2) saved: validation_output1/figures/figure2b_validation_v2.jpg\n")
 }
 
 ################################################################################
@@ -399,85 +446,152 @@ create_figure3_validation <- function(validation_data) {
                         mic = validation_data$biopsy_mitosis,
                         site = validation_data$location)
   
-  # risk levels
-  risk_levels <- c("none", "very_low", "low", "moderate", "high")
+  # keep as character vectors for comparison
+  risk_actual_chr <- as.character(risk_actual)
+  risk_predicted_chr <- as.character(risk_predicted)
+  risk_biopsy_chr <- as.character(risk_biopsy)
   
-  risk_actual <- factor(risk_actual, levels = risk_levels)
-  risk_predicted <- factor(risk_predicted, levels = risk_levels)
-  risk_biopsy <- factor(risk_biopsy, levels = risk_levels)
+  # remove if NA cases
+  valid_idx <- !is.na(risk_actual_chr) & !is.na(risk_predicted_chr) & !is.na(risk_biopsy_chr)
+  
+  if(sum(!valid_idx) > 0) {
+    cat("Warning:", sum(!valid_idx), "cases excluded due to NA risk values\n")
+  }
+  
+  risk_actual_valid <- risk_actual_chr[valid_idx]
+  risk_predicted_valid <- risk_predicted_chr[valid_idx]
+  risk_biopsy_valid <- risk_biopsy_chr[valid_idx]
+  
+  n_valid <- length(risk_actual_valid)
   
   # calculate accuracies
-  acc_model <- sum(risk_predicted == risk_actual) / length(risk_actual)
-  acc_biopsy <- sum(risk_biopsy == risk_actual) / length(risk_actual)
+  matches_model <- risk_predicted_valid == risk_actual_valid
+  matches_biopsy <- risk_biopsy_valid == risk_actual_valid
   
+  acc_model <- sum(matches_model) / n_valid
+  acc_biopsy <- sum(matches_biopsy) / n_valid
+   
   # plot
   jpeg("validation_output1/figures/figure3_validation.jpg", 
-       units = "in", width = 12, height = 6, res = 300)
+       units = "in", width = 14, height = 7, res = 300)
   
-  par(mfrow = c(1, 2), mar = c(5, 5, 4, 2))
+  par(mfrow = c(1, 2), mar = c(6, 6, 4, 2))
   
   ### Panel A: Accuracy comparison ###
-  barplot(c(acc_biopsy, acc_model) * 100,
-          names.arg = c("Biopsy\nAlone", "PROMETheus\nPrediction"),
-          ylim = c(0, 100),
-          ylab = "Classification Accuracy (%)",
-          main = "A) Risk Classification Performance",
-          col = c("coral", "seagreen3"),
-          border = NA,
-          cex.names = 1.2,
-          cex.axis = 1.2,
-          cex.lab = 1.3,
-          cex.main = 1.4)
   
-  text(c(0.7, 1.9), 
-       c(acc_biopsy, acc_model) * 100 + 3,
-       labels = sprintf("%.1f%%", c(acc_biopsy, acc_model) * 100),
+  # set bar heights and check they're not NA
+  bar_heights_A <- c(acc_biopsy * 100, acc_model * 100)
+  
+  # replace any NA with 0 for plotting
+  bar_heights_A[is.na(bar_heights_A)] <- 0
+  
+  par(mgp = c(3, 1.8, 0))
+  
+  bp_A <- barplot(bar_heights_A,
+                  names.arg = c("Biopsy\nAlone", "PROMETheus\nPrediction"),
+                  ylim = c(0, 110),
+                  ylab = "Classification Accuracy (%)",
+                  main = "A) Risk Classification Performance",
+                  col = c("coral", "seagreen3"),
+                  border = NA,
+                  cex.names = 1.2,
+                  cex.axis = 1.2,
+                  cex.lab = 1.3,
+                  cex.main = 1.4)
+  
+  # percentage labels on top of bars
+  text(bp_A, 
+       bar_heights_A + 5,
+       labels = sprintf("%.1f%%", bar_heights_A),
        font = 2, cex = 1.3)
   
-  mtext(sprintf("N = %d patients", nrow(validation_data)), 
+  # sample size
+  mtext(sprintf("N = %d patients", n_valid), 
         side = 3, line = 0.5, cex = 0.9)
   
   ### Panel B: Stratified by actual risk ###
+  
+  # risk levels in order
+  risk_levels <- c("none", "very_low", "low", "moderate", "high")
+  
+  # accuracy for each risk group
   acc_by_risk <- data.frame(
     risk = risk_levels,
-    n = as.numeric(table(risk_actual)),
+    n = sapply(risk_levels, function(r) sum(risk_actual_valid == r)),
     biopsy = sapply(risk_levels, function(r) {
-      idx <- risk_actual == r
-      if(sum(idx) > 0) sum(risk_biopsy[idx] == risk_actual[idx]) / sum(idx) else NA
+      idx <- which(risk_actual_valid == r)
+      if(length(idx) > 0) {
+        sum(risk_biopsy_valid[idx] == risk_actual_valid[idx]) / length(idx) * 100
+      } else {
+        NA
+      }
     }),
     model = sapply(risk_levels, function(r) {
-      idx <- risk_actual == r
-      if(sum(idx) > 0) sum(risk_predicted[idx] == risk_actual[idx]) / sum(idx) else NA
+      idx <- which(risk_actual_valid == r)
+      if(length(idx) > 0) {
+        sum(risk_predicted_valid[idx] == risk_actual_valid[idx]) / length(idx) * 100
+      } else {
+        NA
+      }
     })
   )
   
   # remove empty categories
   acc_by_risk <- acc_by_risk[acc_by_risk$n > 0, ]
   
-  acc_matrix <- t(as.matrix(acc_by_risk[, c("biopsy", "model")]))
-  colnames(acc_matrix) <- acc_by_risk$risk
+  if(nrow(acc_by_risk) == 0) {
+    plot.new()
+    text(0.5, 0.5, "No valid risk categories to display", cex = 1.5)
+  } else {
   
-  bp <- barplot(acc_matrix * 100,
-                beside = TRUE,
-                ylim = c(0, 110),
-                ylab = "Accuracy (%)",
-                main = "B) Performance by Actual Risk Group",
-                col = c("coral", "seagreen3"),
-                border = NA,
-                las = 2,
-                cex.axis = 1.2,
-                cex.lab = 1.3,
-                cex.main = 1.4,
-                legend.text = c("Biopsy", "Model"),
-                args.legend = list(x = "topright", bty = "n", cex = 1.1))
-  
-  # Add sample sizes
-  for(j in 1:ncol(acc_matrix)) {
-    text(mean(bp[, j]), -8,
-         labels = sprintf("n=%d", acc_by_risk$n[j]),
-         cex = 0.9, xpd = TRUE)
+    # matrix for grouped barplot
+    acc_matrix <- rbind(
+      Biopsy = acc_by_risk$biopsy,
+      Model = acc_by_risk$model
+    )
+    colnames(acc_matrix) <- acc_by_risk$risk
+    
+    # NA to 0 for plotting
+    acc_matrix[is.na(acc_matrix)] <- 0
+    
+    par(mar = c(8, 5, 4, 2))
+    
+    bp_B <- barplot(acc_matrix,
+                    beside = TRUE,
+                    ylim = c(0, 120),
+                    ylab = "Accuracy (%)",
+                    main = "B) Performance by Actual Risk Group",
+                    col = c("coral", "seagreen3"),
+                    border = NA,
+                    xaxt = "n",  
+                    cex.axis = 1.2,
+                    cex.lab = 1.3,
+                    cex.main = 1.4,
+                    legend.text = c("Biopsy", "Model"),
+                    args.legend = list(x = "topright", bty = "n", cex = 1.1))
+    
+    # bp_B returns a matrix: rows = groups (Biopsy, Model), cols = risk categories
+    # center position for each risk category
+    category_centers <- colMeans(bp_B)
+    
+    # risk category names (line 1 below axis)
+    axis(1, at = category_centers, 
+         labels = acc_by_risk$risk,
+         tick = FALSE,
+         line = 0.5,
+         cex.axis = 1.1)
+    
+    # sample sizes below the category names (line 2)
+    mtext(sprintf("(n=%d)", acc_by_risk$n),
+          side = 1,
+          at = category_centers,
+          line = 2.5,
+          cex = 0.9)
+    
+    # add x-axis title
+    mtext("Actual Risk Category", side = 1, line = 5, cex = 1.2)
   }
-  
+
   dev.off()
   
   cat("✓ Figure 3 saved: validation_output1/figures/figure3_validation.jpg\n")
