@@ -6,8 +6,12 @@ library(ggplot2)
 library(dplyr)
 library(caret)
 
-################################################################################
-# STEP 1: LOAD TRAINED MODEL AND STANDARDIZATION PARAMETERS
+# # create folder
+# dir.create("~/Documents/R_main/validation_output1/figures")
+# dir.create("~/Documents/R_main/validation_output1/figures")
+
+# ################################################################################
+# STEP 0: LOAD TRAINED MODEL AND STANDARDIZATION PARAMETERS
 ################################################################################
 
 # run data simulation file to
@@ -30,24 +34,46 @@ library(caret)
   saveRDS(std_params, "validation_output1/standardization_params.rds")
   
  
-
+################################################################################
+# HELPER FUNCTION: Safe HPDI that handles constant values
+################################################################################
+  
+safe_HPDI <- function(x, prob = 0.95) {
+ # If all values are the same, return that value for both bounds
+ if (length(unique(x)) == 1) {
+  return(c(x[1], x[1]))
+ }
+ # Otherwise use regular HPDI
+ return(HPDI(x, prob))
+}
+  
+  
 ################################################################################
 # STEP 2: LOAD AND PREPARE REAL VALIDATION DATA
 ################################################################################
 
-load_validation_data <- function(filepath = "validationset.csv") {
+load_validation_data <- function(filepath = "validation_dataset_final.csv") {
   
   # read validation data
   validation_raw <- read.csv(filepath, stringsAsFactors = FALSE)
   
+  # RENAME COLUMNS from data cleaning format to validation script format
+  validation_raw <- validation_raw %>%
+    rename(
+      location = L,
+      biopsy_mitosis = m_bio,
+      biopsy_surface_hpf = surface_mm2,
+      surgery_mitosis = m_surg
+    )
   # check required columns
   required_cols <- c("patient_id", "size_mm", "location", 
                      "biopsy_mitosis", "biopsy_surface_hpf", "surgery_mitosis")
   
   missing_cols <- setdiff(required_cols, names(validation_raw))
   if(length(missing_cols) > 0) {
-    stop(sprintf("Missing required columns: %s", 
-                 paste(missing_cols, collapse = ", ")))
+    stop(sprintf("Missing required columns: %s\nAvailable: %s", 
+                 paste(missing_cols, collapse = ", "),
+                 paste(names(validation_raw), collapse = ", ")))
   }
   
   # load standardization parameters from TRAINING data
@@ -138,12 +164,26 @@ predict_all_validation <- function(validation_data, posterior, std_params) {
   cat("\n✓ Predictions complete\n\n")
   
   # calculate summary statistics
+  
+  predicted_mean <- colMeans(predicted_samples)
+  predicted_median <- apply(predicted_samples, 2, median)
+  
+  # use safe_HPDI to avoid errors with constant predictions
+  predicted_ci_lower <- numeric(n_patients)
+  predicted_ci_upper <- numeric(n_patients)
+  
+  for(i in 1:n_patients) {
+    hpdi_result <- safe_HPDI(predicted_samples[, i], 0.95)
+    predicted_ci_lower[i] <- hpdi_result[1]
+    predicted_ci_upper[i] <- hpdi_result[2]
+  }
+  
   validation_data <- validation_data %>%
     mutate(
-      predicted_mean = colMeans(predicted_samples),
-      predicted_median = apply(predicted_samples, 2, median),
-      predicted_ci_lower = apply(predicted_samples, 2, function(x) HPDI(x, 0.95)[1]),
-      predicted_ci_upper = apply(predicted_samples, 2, function(x) HPDI(x, 0.95)[2]),
+      predicted_mean = predicted_mean,
+      predicted_median = predicted_median,
+      predicted_ci_lower = predicted_ci_lower,   
+      predicted_ci_upper = predicted_ci_upper,
       prediction_error = predicted_mean - surgery_mitosis,
       abs_error = abs(prediction_error),
       
@@ -164,8 +204,14 @@ predict_all_validation <- function(validation_data, posterior, std_params) {
 
 # Miettinen & Lasota Risk Classification
 classify_risk_ML <- function(size_mm, mitotic_count, location) {
+  
+  # handle NA values
+  if(is.na(size_mm) | is.na(mitotic_count) | is.na(location)) {
+    return(NA)
+  }
+  
   size_cm <- size_mm / 10
-  is_gastric <- (location == 2)
+  is_gastric <- (location == 4)
   
   if(is_gastric) {
     if(mitotic_count <= 5) {
@@ -420,7 +466,7 @@ run_validation <- function() {
   cat("\n✓ Loaded trained model\n")
   
   # load validation data
-  loaded <- load_validation_data("validationset.csv")
+  loaded <- load_validation_data("validation_dataset_final.csv")
   validation_data <- loaded$data
   std_params <- loaded$std_params
   
