@@ -258,10 +258,12 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
   
   if (save_plots) {
     jpeg(paste0("output/figures/", "confusion_matrix_model.jpg"), 
-         units = "in", width = 6, height = 5, res = 300)
+         units = "in", width = 6, height = 6, res = 300)
   }
   
-  par(mfrow = c(1, 1), mar = c(6, 6, 5, 4))  
+  par(mfrow = c(1, 1), 
+      mar = c(9, 9, 5, 6),      
+      mgp = c(6, 1, 0))
   
   conf_mat <- accuracy_results$confusion_matrix_model
   
@@ -275,6 +277,7 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
     
     # normalize by column for proportions
     conf_mat_prop <- prop.table(conf_mat, margin = 2)
+    conf_mat_prop[is.nan(conf_mat_prop)] <- 0
     
     # NaN with 0 (happens when a column has all zeros)
     conf_mat_prop[is.nan(conf_mat_prop)] <- 0
@@ -293,17 +296,27 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
       y = 1:nrow(conf_mat_prop),
       z = t(conf_mat_prop[nrow(conf_mat_prop):1, ]),
       col = color_palette,
-      xlab = "Actual Risk (Surgery)",
-      ylab = "Predicted Risk (Model)",
+      xlab = "",                 # add with mtext
+      ylab = "",                 # add with mtext
       main = "Confusion Matrix: Model Predictions",
       axes = FALSE,
       zlim = c(0, max_prop)
     )
     
+    # axis titles manually with precise positioning
+    mtext("Actual Risk (Surgery)", side = 1, line = 7, cex = 1.1)
+    mtext("Predicted Risk (Model)", side = 2, line = 6, cex = 1.1)
+    
     # axes
-    axis(1, at = 1:ncol(conf_mat_prop), labels = colnames(conf_mat_prop), las = 2)
+    axis(1, at = 1:ncol(conf_mat_prop), 
+         labels = colnames(conf_mat_prop), 
+         las = 2,                
+         cex.axis = 0.9)         
+    
     axis(2, at = 1:nrow(conf_mat_prop), 
-         labels = rev(rownames(conf_mat_prop)), las = 1)
+         labels = rev(rownames(conf_mat_prop)), 
+         las = 1,                
+         cex.axis = 0.9)
     
     # grid
     abline(h = 0.5:(nrow(conf_mat_prop) + 0.5), col = "white", lwd = 2)
@@ -331,13 +344,14 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
     # color legend
     legend_vals <- seq(0, max_prop, length.out = 5)
     legend(
-      x = ncol(conf_mat_prop) + 1.5,
+      x = ncol(conf_mat_prop) + 0.8,
       y = nrow(conf_mat_prop),
       legend = paste0(round(legend_vals * 100, 0), "%"),
       fill = color_palette[seq(1, n_colors, length.out = 5)],
       title = "Proportion",
       xpd = TRUE,
-      bty = "n"
+      bty = "n",
+      cex = 0.9
     )
     
     if (save_plots) dev.off()
@@ -350,10 +364,12 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
   
   if (save_plots) {
     jpeg(paste0("output/figures/", "confusion_matrix_biopsy.jpg"), 
-         units = "in", width = 6, height = 5, res = 300)
+         units = "in", width = 7, height = 5, res = 300)
   }
   
-  par(mfrow = c(1, 1), mar = c(7, 7, 5, 4), mgp = c(3, 1, 0))  
+  par(mfrow = c(1, 1), 
+      mar = c(9, 8, 5, 4),      
+      mgp = c(5, 1, 0))  
   
   conf_mat_bio <- accuracy_results$confusion_matrix_biopsy
   
@@ -388,10 +404,15 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
       zlim = c(0, max_prop_bio)
     )
     
-    axis(1, at = 1:ncol(conf_mat_bio_prop), labels = colnames(conf_mat_bio_prop), las = 2)
+    axis(1, at = 1:ncol(conf_mat_bio_prop), 
+         labels = colnames(conf_mat_bio_prop), 
+         las = 2,
+         cex.axis = 0.9)           # Slightly smaller labels if needed
+    
     axis(2, at = 1:nrow(conf_mat_bio_prop), 
-         #labels = rev(rownames(conf_mat_bio_prop)), las = 1)
-         labels = rev(rownames(conf_mat_bio_prop)), las = 1, cex.axis = 0.8)
+         labels = rev(rownames(conf_mat_bio_prop)), 
+         las = 1, 
+         cex.axis = 0.9)
     
     abline(h = 0.5:(nrow(conf_mat_bio_prop) + 0.5), col = "white", lwd = 2)
     abline(v = 0.5:(ncol(conf_mat_bio_prop) + 0.5), col = "white", lwd = 2)
@@ -473,10 +494,12 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
   
   if (save_plots) {
     jpeg(paste0("output/figures/", "high_risk_performance.jpg"), 
-         units = "in", width = 8, height = 6, res = 300)
+         units = "in", width = 9, height = 7, res = 300)
   }
   
-  par(mfrow = c(1, 1), mar = c(8, 5, 4, 2))
+  par(mfrow = c(1, 1), 
+      mar = c(6, 5, 5, 8),      
+      xpd = FALSE)
 
   perf_data <- accuracy_results$high_risk_performance
   
@@ -484,32 +507,47 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
   perf_matrix <- t(as.matrix(perf_data[, c("Sensitivity", "Specificity")]))
   colnames(perf_matrix) <- perf_data$Method
   
-  barplot(
+  x_pos <- barplot(
     perf_matrix * 100,
     beside = TRUE,
-    ylim = c(0, 100),
+    ylim = c(0, 115),            # extended to fit labels above 100%
     ylab = "Performance (%)",
     main = "Performance for 'High Risk' Classification",
     col = c("tomato", "skyblue"),
     border = NA,
-    las = 2,
-    legend.text = c("Sensitivity", "Specificity"),
-    args.legend = list(x = "topright", bty = "n")
+    las = 1,                     # horizontal x-axis labels (option 1)
+    # las = 2,                   # for rotated labels (option 2)
+    names.arg = perf_data$Method,
+    cex.names = 0.9
   )
   
-  # percentage labels
-  x_pos <- barplot(perf_matrix * 100, beside = TRUE, plot = FALSE)
+  # percentage labels - positioned safely above bars
   for (i in 1:nrow(perf_matrix)) {
     for (j in 1:ncol(perf_matrix)) {
+      label_y <- perf_matrix[i, j] * 100 + 5  # 5% above bar
       text(
         x = x_pos[i, j],
-        y = perf_matrix[i, j] * 100 + 3,
+        y = label_y,
         labels = paste0(round(perf_matrix[i, j] * 100, 1), "%"),
         font = 2,
         cex = 0.9
       )
     }
   }
+  
+  # legend OUTSIDE the plot area
+  par(xpd = TRUE)  # Allow drawing outside plot region
+  legend(
+    x = max(x_pos) + 1,          # Position to the right of bars
+    
+    y = 100,                      # Top of plot
+    legend = c("Sensitivity", "Specificity"),
+    fill = c("tomato", "skyblue"),
+    border = NA,
+    bty = "n",                   # No box around legend
+    cex = 1
+  )
+  par(xpd = FALSE)  # Reset to default
   
   if (save_plots) dev.off()
   
