@@ -1,7 +1,5 @@
-### better plot but improve rectangles!!
-## like the posterior predictive check plot
-
 ### fig.2B
+## like the posterior predictive check plot
 # run simulation file
 # run analysis file
 
@@ -36,91 +34,107 @@ plot_data_ordered$x_position <- 1:nrow(plot_data_ordered)
 location_names <- c("Colon-rectum", "Duodenum", "Small intestine", "Stomach", "Esophageal")
 plot_data_ordered$location_name <- location_names[plot_data_ordered$location]
 
-# colors - matching your goal image style
-location_colors <- c("#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00")
+# colors
+location_colors <- c(
+  
+  "#FFB6C1",   # 1: Colon-rectum - light pink/salmon
+  "#ADD8E6",   # 2: Duodenum - light blue
+  "#90EE90",   # 3: Small intestine - light green
+  "#DDA0DD",   # 4: Stomach - light purple/plum
+  "#FFDAB9"    # 5: Esophageal - peach/light orange
+)
+
+# segment colors
 over_col <- "#2ECC71"
 under_col <- "#E74C3C"
 
-### FIGURE: plot styled like posterior predictive check ###
-jpeg(paste0("output/figures/", "Difference_by_Size.jpg"), 
+# create figure
+jpeg(paste0("output/figures/", "Difference_by_Size_styled.jpg"), 
      units = "in", 
-     width = 18, height = 10, res = 400)
+     width = 18, height = 12, res = 400)
 
-par(mar = c(8, 8, 4, 4))
+# create layout: main plot on top (larger), legend panel at bottom (smaller)
+layout(matrix(c(1, 2), nrow = 2), heights = c(4, 1))
+
+# PANEL 1: main plot
+par(mar = c(6, 8, 4, 4))  # bottom, left, top, right
 
 plot(plot_data_ordered$x_position, plot_data_ordered$difference, 
      type = "n",
      xlab = "", 
      ylab = "Difference (Predicted λ - True Mitotic Count)",
      main = "Prediction Error Ordered by Tumor Size (Ascending)",
-     bty = "l",
+     bty = "n",
      ylim = range(plot_data_ordered$difference) * 1.15,
      xaxt = "n",
      cex.lab = 1.5,
      cex.main = 1.7,
      cex.axis = 1.3)
 
-# Draw vertical FULL HEIGHT background bars for each case (like in goal image)
+# draw vertical background bars
 for (i in 1:nrow(plot_data_ordered)) {
   rect(xleft = plot_data_ordered$x_position[i] - 0.5,
        xright = plot_data_ordered$x_position[i] + 0.5,
-       ybottom = par("usr")[3],  # bottom of plot area
-       ytop = par("usr")[4],      # top of plot area
-       col = alpha(location_colors[plot_data_ordered$location[i]], 0.2),
+       ybottom = par("usr")[3],
+       ytop = par("usr")[4],
+       col = alpha(location_colors[plot_data_ordered$location[i]], 0.35),
        border = NA)
 }
 
-# horizontal grid
-abline(h = seq(floor(min(plot_data_ordered$difference)), 
-               ceiling(max(plot_data_ordered$difference)), by = 5),
-       col = "gray85", lty = 1)
+# horizontal reference lines
+abline(h = seq(floor(min(plot_data_ordered$difference)/10)*10, 
+               ceiling(max(plot_data_ordered$difference)/10)*10, by = 10),
+       col = alpha("gray50", 0.3), lty = 1, lwd = 0.5)
 
-# zero line (thicker and more prominent)
-abline(h = 0, lty = 1, col = "black", lwd = 2)
+# zero line
+abline(h = 0, lty = 1, col = "black", lwd = 1.5)
 
-# Draw the difference segments with directional coloring
+# segments
 segments(x0 = plot_data_ordered$x_position, 
          y0 = 0, 
          y1 = plot_data_ordered$difference,
-         col = ifelse(plot_data_ordered$difference > 0, 
-                      over_col, 
-                      under_col),
-         lwd = 2)
+         col = ifelse(plot_data_ordered$difference > 0, over_col, under_col),
+         lwd = 1.5)
 
-# # points on top (optional - can remove if you want cleaner look)
-# points(plot_data_ordered$x_position, plot_data_ordered$difference, 
-#        pch = 21,
-#        bg = alpha(location_colors[plot_data_ordered$location], 0.8),
-#        col = "black",
-#        cex = 1,
-#        lwd = 0.5)
-
-# X-axis: Tumor sizes
+# X-axis
 axis(1, at = plot_data_ordered$x_position, 
      labels = round(plot_data_ordered$tumor_size, 1),
-     las = 2,
-     cex.axis = 0.5,
-     col.axis = "darkgreen",
-     col.ticks = "darkgreen",
-     line = 0)
-mtext("Tumor Size (standardized)", side = 1, line = 3, cex = 1.2, col = "darkgreen")
+     las = 2, cex.axis = 0.35,
+     col.axis = "darkgreen", col.ticks = "darkgreen",
+     line = 0, tck = -0.01)
 
-# Legend - prediction direction
-legend("topright", 
+mtext("Tumor Size (standardized)", side = 1, line = 4.5, cex = 1.2, col = "darkgreen")
+
+# PANEL 2: legends
+par(mar = c(1, 8, 1, 4))  
+
+plot.new()  # empty plot for legends
+
+# location legend (sx)
+legend("left",
+       title = expression(bold("Tumor Location")),
+       legend = location_names,
+       pch = 22,
+       pt.bg = alpha(location_colors, 0.35),
+       col = "black",
+       pt.cex = 2.5,
+       cex = 1.2,
+       bty = "n",
+       horiz = FALSE,
+       ncol = 5)  # Horizontal layout
+
+# prediction direction legend (dx)
+legend("right",
        title = expression(bold("Prediction Direction")),
        legend = c("Overestimation (λ > y)", 
                   "Underestimation (λ < y)", 
                   "Perfect prediction"),
        col = c(over_col, under_col, "black"),
-       lwd = 3, cex = 1.2, bty = "n")
-
-# Location legend
-legend("topleft",
-       title = expression(bold("Tumor Location")),
-       legend = location_names,
-       fill = alpha(location_colors, 0.2),
-       border = "black",
-       cex = 1.1,
+       lwd = 4, 
+       cex = 1.2, 
        bty = "n")
 
 dev.off()
+
+# reset layout
+layout(1)
