@@ -297,8 +297,12 @@ for(i in which(resp_Rx==1)) m_sur[i] <- rpois(n = 1, lambda = 0.1)
 sim <- data.frame( m_bio , m_sur, Su , Si , L , U, resp_Rx)
 
 # creating a slim db for the analysis
-slim <- sample(x = 1:nrow(sim) , size = 100) #index to sample
+slim <- sample(x = 1:nrow(sim) , size = nrow(sim)/2) #index to sample
 slim_sim <- sim[slim, ]
+val <- (1:nrow(sim))[-slim]
+val <- val[sim[val,7]==0]
+validation <- sim[val,]
+
 pairs(slim_sim)
 
 ##### Data analysis 
@@ -315,6 +319,10 @@ dat <- list(
 )
 
 # fitting the model
+# problems with rethinking moving to cmdstanr
+mod <- cmdstan_model("figure 1 scripts/model_centered.stan")
+fit <- mod$sample(data = dat, chains = 4, parallel_chains = 4, refresh = 500)
+# # fitting the model
 # m <- ulam(
 #   alist(
 #     m_surg ~ dpois(lambda),
@@ -324,19 +332,19 @@ dat <- list(
 #     a ~ normal( -1 , 0.2),
 #     c(b_bar, g , d , e_bar ) ~ normal( -1 , 0.2 ),
 #     c(sigmab, sigmae) ~ dexp( 2 )
-#   ), data=dat , chains=4 , cores=4 , iter=4000 , log_lik = FALSE)
-# 2% of divergent transitions therefore we moved to NC
-# fitting the model nc
-m <- ulam(
-  alist(
-    m_surg ~ dpois(lambda),
-    log(lambda) <- a + sigmab * z_b[L] * Si + g * m_bio * n  + d * m_bio * y + sigmae * z_e[L] * Su,
-    z_b[L] ~ normal( -1 , 0.5),
-    z_e[L] ~ normal( -1 , 0.5),
-    a ~ normal( -1 , 0.2),
-    c( g , d  ) ~ normal( -1 , 0.2 ),
-    c(sigmab, sigmae) ~ dexp( 2 )
-  ), data=dat , chains=4 , cores=4 , iter=8000 , log_lik = FALSE)
+#   ), data=dat , chains=4 , cores=4 , iter=4000 , log_lik = FALSE, sample = FALSE)
+# # 2% of divergent transitions therefore we moved to NC
+# # fitting the model nc
+# m <- ulam(
+#   alist(
+#     m_surg ~ dpois(lambda),
+#     log(lambda) <- a + sigmab * z_b[L] * Si + g * m_bio * n  + d * m_bio * y + sigmae * z_e[L] * Su,
+#     z_b[L] ~ normal( -1 , 0.5),
+#     z_e[L] ~ normal( -1 , 0.5),
+#     a ~ normal( -1 , 0.2),
+#     c( g , d  ) ~ normal( -1 , 0.2 ),
+#     c(sigmab, sigmae) ~ dexp( 2 )
+#   ), data=dat , chains=4 , cores=4 , iter=8000 , log_lik = FALSE)
 
 # model diagnostics
 jpeg(paste0("output/figures/","dashboardSIM",".jpg"), 
@@ -352,7 +360,8 @@ trankplot(m, n_cols = 4)
 dev.off()
 
 # Posterior probability
-post <- extract.samples(m) # extract the samples from the model's fit
+post <- extract.samples(fit)
+# post <- extract.samples(m) # extract the samples from the model's fit
 precis(m,2) # makes a table with model coefficients
 
 # plot the model coefficients
@@ -400,6 +409,14 @@ m_link <- function( Si , m_bio, Su , L ) {
   lambda
 }
 
+m_link <- function( Si , m_bio, Su , L ) {
+  m_bio <- (m_bio - mubio) / sdbio
+  Su <- (Su - muSu) / sdSu
+  mu <- with( post ,{
+    a + sigmab * b[ ,L] * Si + g * m_bio + sigmae * e[ ,L] * Su })
+  lambda <- exp( mu )
+  lambda
+}
 #as an example
 lambda <- m_link( Si =  5 , m_bio = 7, Su = 23.5, L = 2)
 median(lambda)
@@ -475,6 +492,46 @@ segments(x0 = 1:length(slim), y0 = log(lci[1,j]+ 0.1), y1 = log(lci[2,j]+ 0.1), 
 points(1:length(slim), log(lmed[j] + 0.1), pch = 16)
 axis(2, at = log(c(0.1,1,2,3,5,10,20, 50, 100)), labels = c(0,1,2,3,5,10,20,50, 100), las = 2)
 axis(1, at = 1:length(slim), labels = 1:length(slim))
+legend('topleft', legend = c('Biopsy','Surgery','Surgery NAC response','Prediction'), 
+       pch = c(4, 1, 1, 16), lwd = 2, lty = c(0, 0 , 0 ,1), col = c(4, 3, 2, 1))
+dev.off()
+
+
+### validating on the remaining
+# our synthetic dataset 
+lambda <- mapply(m_link , Si = validation$Si, m_bio = validation$m_bio , 
+                 Su = validation$Su , L = validation$L )
+lmed <- apply( lambda , 2 , median ) #
+lci <- apply( lambda , 2 , HPDI )
+j <- order(lmed)
+# 
+
+jpeg(paste0("output/figures/","Figure1",".jpg"), 
+     units = "in", 
+     width = 15, height = 15, res = 300)
+par(mfrow=c(2,1))
+plot(NULL, xlim = c(1,length(val)), ylim = c(log(0.1),log(70)), bty = 'n', xaxt = 'n', 
+     yaxt = "n", ylab = 'lambda: expected value of mitotic count', 
+     xlab = 'Cases', main = 'Validation')
+abline(h = log(c(0.1,1,2,3,5,10,20, 50, 100)), col = scales::alpha(1,0.3))
+points(1:length(val), log(lambda_sur[val][j]), col = 6, pch = 5, lwd= 2)
+segments(x0 = 1:length(val), y0 = log(lci[1,j]+ 0.1), y1 = log(lci[2,j]+ 0.1), lwd = 2)
+points(1:length(val), log(lmed[j] + 0.1), pch = 16)
+axis(2, at = log(c(0.1,1,2,3,5,10,20, 50, 100)), labels = c(0.1,1,2,3,5,10,20,50, 100), las = 2)
+axis(1, at = 1:length(val), labels = 1:length(val))
+legend('topleft', legend = c('True lambda surgery','Predicted lambda surgery'), 
+       pch = c(5, 16), lwd = 2, lty = c(0 ,1), col = c(6, 1))
+
+plot(NULL, xlim = c(1,length(val)), ylim = c(log(0.1),log(70)), bty = 'n', xaxt = 'n', 
+     yaxt = "n", ylab = 'Mitotic count', xlab = 'Cases', main = 'Posterior predictive check')
+abline(v = 1:length(val), lty = 1, col = scales::alpha(validation$L[j], 0.2), lwd = 10)
+abline(h = log(5+ 0.1))
+points(1:length(val), log(validation$m_bio[j] + 0.1), col = 4, pch = 4, lwd= 2, cex = 0.3 + validation$Su/23.5)
+points(1:length(val), log(validation$m_sur[j] + 0.1), col = 2 , lwd= 3, cex = 0.3 + validation$Su/23.5 )
+segments(x0 = 1:length(val), y0 = log(lci[1,j]+ 0.1), y1 = log(lci[2,j]+ 0.1), lwd = 2)
+points(1:length(val), log(lmed[j] + 0.1), pch = 16)
+axis(2, at = log(c(0.1,1,2,3,5,10,20, 50, 100)), labels = c(0,1,2,3,5,10,20,50, 100), las = 2)
+axis(1, at = 1:length(val), labels = 1:length(val))
 legend('topleft', legend = c('Biopsy','Surgery','Surgery NAC response','Prediction'), 
        pch = c(4, 1, 1, 16), lwd = 2, lty = c(0, 0 , 0 ,1), col = c(4, 3, 2, 1))
 dev.off()

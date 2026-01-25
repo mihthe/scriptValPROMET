@@ -14,7 +14,7 @@ getmode <- function(v) {
   uniqv[which.max(tabulate(match(v, uniqv)))]
 }
 
-# c.dashboard <- function (fit, warmup = FALSE, plot = TRUE, trank = TRUE) 
+c.dashboard <- function (fit, warmup = FALSE, plot = TRUE, trank = TRUE) 
 {
   if (class(fit) %in% c("map2stan", "ulam")) 
     fit <- fit@stanfit

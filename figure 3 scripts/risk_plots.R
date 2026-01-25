@@ -9,7 +9,7 @@ source("risk_functions.R")  # Load the risk function we created
 ###########################################
 
 # adapting from app file
-compute_risk_classifications <- function(slim_sim, post, use_predictions = TRUE) {
+compute_risk_classifications <- function(validation, post, use_predictions = TRUE) {
   # Computes risk classes based on biopsy and surgery mitotic counts
   #   check data frame has columns Si (size), m_bio, m_sur, Su, L
   #   posterior samples from the fitted model
@@ -18,38 +18,47 @@ compute_risk_classifications <- function(slim_sim, post, use_predictions = TRUE)
   # Returns:
   #   data frame with original data plus risk classifications
   
-  n_cases <- nrow(slim_sim) # using slim_sim from simulation file
+  n_cases <- nrow(validation) # using validation from simulation file
   
   # 1. risk based on BIOPSY mitotic count
   risk_biopsy <- risk_str_vectorized(
-    size = slim_sim$Si, 
-    mic = slim_sim$m_bio, 
-    site = slim_sim$L
+    size = validation$Si, 
+    mic = validation$m_bio, 
+    site = validation$L
   )
   
   # 2. risk based on SURGERY mitotic count 
   risk_surgery_actual <- risk_str_vectorized(
-    size = slim_sim$Si, 
-    mic = slim_sim$m_sur, 
-    site = slim_sim$L
+    size = validation$Si, 
+    mic = validation$m_sur, 
+    site = validation$L
   )
   
   # 3. risk based on PREDICTED surgery mitotic count
   if (use_predictions) {
     
     # link function to predict lambda (expected mitotic count)
-    m_link <- function(Si, m_bio, Su, L) {
-      # std w\ training data parameters
-      Si <- (Si - 62.175) / 48.07636
-      m_bio <- (m_bio - 3.6625) / 8.066094
-      Su <- (Su - 14.51) / 9.335991
-      
-      mu <- with(post, {
-        a + b[, L] * Si + g * m_bio + e[, L] * Su
-      })
-      lambda <- exp(mu)
+
+    m_link <- function( Si , m_bio, Su , L ) {
+      m_bio <- (m_bio - mubio) / sdbio
+      Su <- (Su - muSu) / sdSu
+      mu <- with( post ,{
+        a + sigmab * b[ ,L] * Si + g * m_bio + sigmae * e[ ,L] * Su })
+      lambda <- exp( mu )
       return(lambda)
-    }
+      }   
+    # m_link <- function(Si, m_bio, Su, L) {
+    #   # std w\ training data parameters
+    #   Si <- (Si - 62.175) / 48.07636
+    #   m_bio <- (m_bio - 3.6625) / 8.066094
+    #   Su <- (Su - 14.51) / 9.335991
+      
+    #   mu <- with(post, {
+    #     a + b[, L] * Si + g * m_bio + e[, L] * Su
+    #   })
+    #   lambda <- exp(mu)
+    #   return(lambda)
+    # }
     
     # predictions for each case
     risk_surgery_predicted <- character(n_cases)
@@ -58,10 +67,10 @@ compute_risk_classifications <- function(slim_sim, post, use_predictions = TRUE)
     for (i in 1:n_cases) {
       # lambda distribution for this case
       lambda <- m_link(
-        Si = slim_sim$Si[i], 
-        m_bio = slim_sim$m_bio[i], 
-        Su = slim_sim$Su[i], 
-        L = slim_sim$L[i]
+        Si = validation$Si[i], 
+        m_bio = validation$m_bio[i], 
+        Su = validation$Su[i], 
+        L = validation$L[i]
       )
       
       # median of lambda as predicted mitotic count
@@ -70,9 +79,9 @@ compute_risk_classifications <- function(slim_sim, post, use_predictions = TRUE)
       
       # risk class from predicted mitosis
       risk_surgery_predicted[i] <- risk_str(
-        size = slim_sim$Si[i], 
+        size = validation$Si[i], 
         mic = round(pred_mitosis), 
-        site = slim_sim$L[i]
+        site = validation$L[i]
       )
       
       if (i %% 100 == 0) cat("  Processed", i, "cases\n")
@@ -80,17 +89,17 @@ compute_risk_classifications <- function(slim_sim, post, use_predictions = TRUE)
     
   } else {
     risk_surgery_predicted <- risk_surgery_actual
-    predicted_mitosis_median <- slim_sim$m_sur
+    predicted_mitosis_median <- validation$m_sur
   }
   
   # everything into output data frame
   result <- data.frame(
     case_id = 1:n_cases,
-    size = slim_sim$Si,
-    location = slim_sim$L,
-    m_bio = slim_sim$m_bio,
-    m_sur = slim_sim$m_sur,
-    surface_bio = slim_sim$Su,
+    size = validation$Si,
+    location = validation$L,
+    m_bio = validation$m_bio,
+    m_sur = validation$m_sur,
+    surface_bio = validation$Su,
     risk_biopsy = risk_biopsy,
     risk_surgery_actual = risk_surgery_actual,
     risk_surgery_predicted = risk_surgery_predicted,
@@ -571,7 +580,7 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
 
 # computing risk classification
 risk_data <- compute_risk_classifications(
-  slim_sim = slim_sim,    # Pass the dataset
+  validation = validation,    # Pass the dataset
   post = post,            # Pass the posterior
   use_predictions = TRUE  # Use model predictions
 )
@@ -600,3 +609,37 @@ plot_accuracy_results(
   save_plots = TRUE,
   output_dir = "output/figures/"
 )
+<<<<<<< HEAD
+=======
+
+#######################
+summary(validation$Su)
+fstQ <- quantile(validation$Su, .25)
+idx <- validation$Su < fstQ
+
+# computing risk classification
+risk_data <- compute_risk_classifications(
+  validation = validation[idx,],    # Pass the dataset
+  post = post,            # Pass the posterior
+  use_predictions = TRUE  # Use model predictions
+)
+
+# computing accuracy metrics
+accuracy_results <- calculate_accuracy_metrics(risk_data)
+
+# print overall accuracy results
+print(accuracy_results$overall_accuracy)
+
+# print for high risk perfomance
+print(accuracy_results$high_risk_performance)
+
+# print risk category changes
+print(accuracy_results$risk_changes)
+
+# print confusion matrix - model prediction
+print(accuracy_results$confusion_matrix_model)
+
+# print confusion matrix - biopsy
+print(accuracy_results$confusion_matrix_biopsy)
+
+>>>>>>> 0090876 (validation figures done on non training data)

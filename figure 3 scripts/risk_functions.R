@@ -9,7 +9,7 @@ write.csv(slim_sim, "slim_sim.csv", row.names = FALSE)
 # risk function from app file 
 risk_str <- function(size, mic, site) {
   
-  size <- size / 10
+  size <- exp(size) # in the simulation size is rnorm
   
   if (site == 4L) {
     
@@ -92,7 +92,7 @@ risk_str_vectorized <- function(size, mic, site) {
 source("risk_functions.R")
 
 # if a single patient:
-risk_single <- risk_str(size = 45, mic = 7, site = 4L) # arbitrary values
+risk_str(size = 10, mic = 1, site = 4L) # arbitrary values
 
 # if multiple patients (where db is your dataset):
 db$risk_biopsy <- risk_str_vectorized(

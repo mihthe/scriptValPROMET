@@ -13,15 +13,16 @@ abs_difference <- abs(difference)
 
 # comprehensive data frame
 plot_data <- data.frame(
-  patient_id = 1:nrow(sim),
+  patient_id = val[-217],
   difference = difference,
   abs_difference = abs_difference,
-  surface = sim$Su,
-  m_sur = sim$m_sur,
-  lmed = lmed,
-  location = sim$L,
-  tumor_size = sim$Si
+  surface = validation$Su[-217],  m_sur = validation$m_sur[-217],
+  lmed = lmed[-217],
+  location = validation$L[-217],
+  tumor_size = validation$Si[-217]
 )
+
+
 
 # order ONLY by tumor size (ascending)
 plot_data_ordered <- plot_data %>%
