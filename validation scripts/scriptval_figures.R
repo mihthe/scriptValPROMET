@@ -554,7 +554,11 @@ create_figure3_validation <- function(validation_data) {
     # NA to 0 for plotting
     acc_matrix[is.na(acc_matrix)] <- 0
     
-    par(mar = c(8, 5, 4, 2))
+    # combined labels with line break to avoid overlap
+    combined_labels <- paste0(acc_by_risk$risk, "\n(n=", acc_by_risk$n, ")")
+    
+    #par(mar = c(8, 5, 4, 2))
+    par(mar = c(7, 5, 4, 2))
     
     bp_B <- barplot(acc_matrix,
                     beside = TRUE,
@@ -563,35 +567,37 @@ create_figure3_validation <- function(validation_data) {
                     main = "B) Performance by Actual Risk Group",
                     col = c("coral", "seagreen3"),
                     border = NA,
-                    xaxt = "n",  
+                    names.arg = combined_labels,  # use combined labels directly
+                    cex.names = 1.0,              # adjust size if needed
                     cex.axis = 1.2,
                     cex.lab = 1.3,
                     cex.main = 1.4,
                     legend.text = c("Biopsy", "Model"),
                     args.legend = list(x = "topright", bty = "n", cex = 1.1))
-    
-    # bp_B returns a matrix: rows = groups (Biopsy, Model), cols = risk categories
-    # center position for each risk category
-    category_centers <- colMeans(bp_B)
-    
-    # risk category names (line 1 below axis)
-    axis(1, at = category_centers, 
-         labels = acc_by_risk$risk,
-         tick = FALSE,
-         line = 0.5,
-         cex.axis = 1.1)
-    
-    # sample sizes below the category names (line 2)
-    mtext(sprintf("(n=%d)", acc_by_risk$n),
-          side = 1,
-          at = category_centers,
-          line = 2.5,
-          cex = 0.9)
-    
-    # add x-axis title
-    mtext("Actual Risk Category", side = 1, line = 5, cex = 1.2)
   }
-
+    
+  #   # bp_B returns a matrix: rows = groups (Biopsy, Model), cols = risk categories
+  #   # center position for each risk category
+  #   category_centers <- colMeans(bp_B)
+  #   
+  #   # risk category names (line 1 below axis)
+  #   axis(1, at = category_centers, 
+  #        labels = acc_by_risk$risk,
+  #        tick = FALSE,
+  #        line = 0.5,
+  #        cex.axis = 1.1)
+  #   
+  #   # sample sizes below the category names (line 2)
+  #   mtext(sprintf("(n=%d)", acc_by_risk$n),
+  #         side = 1,
+  #         at = category_centers,
+  #         line = 2.5,
+  #         cex = 0.9)
+  #   
+  #   # add x-axis title
+  #   mtext("Actual Risk Category", side = 1, line = 5, cex = 1.2)
+  # }
+  
   dev.off()
   
   cat("✓ Figure 3 saved: validation_output1/figures/figure3_validation.jpg\n")
