@@ -45,7 +45,8 @@ compute_risk_classifications <- function(validation, post, use_predictions = TRU
       mu <- with( post ,{
         a + sigmab * b[ ,L] * Si + g * m_bio + sigmae * e[ ,L] * Su })
       lambda <- exp( mu )
-      return(lambda)
+      sim_m_sur <- rpois(4000, lambda)
+      return(sim_m_sur)
       }   
     # m_link <- function(Si, m_bio, Su, L) {
     #   # std w\ training data parameters
@@ -66,7 +67,7 @@ compute_risk_classifications <- function(validation, post, use_predictions = TRU
     
     for (i in 1:n_cases) {
       # lambda distribution for this case
-      lambda <- m_link(
+      sim_m_sur <- m_link(
         Si = validation$Si[i], 
         m_bio = validation$m_bio[i], 
         Su = validation$Su[i], 
@@ -74,7 +75,7 @@ compute_risk_classifications <- function(validation, post, use_predictions = TRU
       )
       
       # median of lambda as predicted mitotic count
-      pred_mitosis <- median(lambda)
+      pred_mitosis <- median(sim_m_sur)
       predicted_mitosis_median[i] <- pred_mitosis
       
       # risk class from predicted mitosis
@@ -350,18 +351,18 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
       }
     }
     
-    # color legend
-    legend_vals <- seq(0, max_prop, length.out = 5)
-    legend(
-      x = ncol(conf_mat_prop) + 0.8,
-      y = nrow(conf_mat_prop),
-      legend = paste0(round(legend_vals * 100, 0), "%"),
-      fill = color_palette[seq(1, n_colors, length.out = 5)],
-      title = "Proportion",
-      xpd = TRUE,
-      bty = "n",
-      cex = 0.9
-    )
+    # # color legend
+    # legend_vals <- seq(0, max_prop, length.out = 5)
+    # legend(
+    #   x = ncol(conf_mat_prop) + 0.8,
+    #   y = nrow(conf_mat_prop),
+    #   legend = paste0(round(legend_vals * 100, 0), "%"),
+    #   fill = color_palette[seq(1, n_colors, length.out = 5)],
+    #   title = "Proportion",
+    #   xpd = TRUE,
+    #   bty = "n",
+    #   cex = 0.9
+    # )
     
     if (save_plots) dev.off()
   }
@@ -373,7 +374,7 @@ plot_accuracy_results <- function(accuracy_results, save_plots = TRUE,
   
   if (save_plots) {
     jpeg(paste0("output/figures/", "confusion_matrix_biopsy.jpg"), 
-         units = "in", width = 7, height = 5, res = 300)
+         units = "in", width = 6, height = 6, res = 300)
   }
   
   par(mfrow = c(1, 1), 
@@ -609,37 +610,3 @@ plot_accuracy_results(
   save_plots = TRUE,
   output_dir = "output/figures/"
 )
-<<<<<<< HEAD
-=======
-
-#######################
-summary(validation$Su)
-fstQ <- quantile(validation$Su, .25)
-idx <- validation$Su < fstQ
-
-# computing risk classification
-risk_data <- compute_risk_classifications(
-  validation = validation[idx,],    # Pass the dataset
-  post = post,            # Pass the posterior
-  use_predictions = TRUE  # Use model predictions
-)
-
-# computing accuracy metrics
-accuracy_results <- calculate_accuracy_metrics(risk_data)
-
-# print overall accuracy results
-print(accuracy_results$overall_accuracy)
-
-# print for high risk perfomance
-print(accuracy_results$high_risk_performance)
-
-# print risk category changes
-print(accuracy_results$risk_changes)
-
-# print confusion matrix - model prediction
-print(accuracy_results$confusion_matrix_model)
-
-# print confusion matrix - biopsy
-print(accuracy_results$confusion_matrix_biopsy)
-
->>>>>>> 0090876 (validation figures done on non training data)

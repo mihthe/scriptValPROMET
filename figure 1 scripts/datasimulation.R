@@ -258,18 +258,19 @@ corr_a_b <- mvrnorm( H , Mu , Sigma )
 alpha_surf <- corr_a_b[ , 1 ]
 beta_surf <- corr_a_b[ , 2 ]
 # lastly we simulate size
-mu_surf <- 2 + alpha_surf[L] + beta_surf[L] * Si
+mu_surf <- 1 + alpha_surf[L] + beta_surf[L] * Si
 logit_Su <- rnorm(n = N, mean = mu_surf, sd = 2)
-Su <- inv_logit(logit_Su)
-Su <- Su * 23.5 
+SuP <- inv_logit(logit_Su)
+Su <- SuP * 23.5 
 
 # now we can simulate M bio
-a <- -3 # lambd_sur and log sur add + 4   
-b <- 1
-log_surf <- log( Su )
-mu_bio <-  log_surf + a + b * mu_sur
-lambda_bio <- exp( mu_bio )
-m_bio <- rpois( n = N , lambda = lambda_bio )
+m_bio <- rpois( n = N , lambda = lambda_sur*SuP )
+# a <- -3 # lambd_sur and log sur add + 4   
+# b <- 1
+# log_surf <- log( Su )
+# mu_bio <-  log_surf + a + b * mu_sur
+# lambda_bio <- exp( mu_bio )
+# m_bio <- rpois( n = N , lambda = lambda_bio )
 
 # lastly let simulate therapy and response to it
 # therapy in GIST is done in high risk patients
@@ -400,14 +401,14 @@ sdSu <- attr(dat$Su, 'scaled:scale')
 # }
 
 
-m_link <- function( Si , m_bio, Su , L ) {
-  m_bio <- (m_bio - mubio) / sdbio
-  Su <- (Su - muSu) / sdSu
-  mu <- with( post ,{
-    a + sigmab * z_b[ ,L] * Si + g * m_bio + sigmae * z_e[ ,L] * Su })
-  lambda <- exp( mu )
-  lambda
-}
+# m_link <- function( Si , m_bio, Su , L ) {
+#   m_bio <- (m_bio - mubio) / sdbio
+#   Su <- (Su - muSu) / sdSu
+#   mu <- with( post ,{
+#     a + sigmab * z_b[ ,L] * Si + g * m_bio + sigmae * z_e[ ,L] * Su })
+#   lambda <- exp( mu )
+#   lambda
+# }
 
 m_link <- function( Si , m_bio, Su , L ) {
   m_bio <- (m_bio - mubio) / sdbio
@@ -532,6 +533,6 @@ segments(x0 = 1:length(val), y0 = log(lci[1,j]+ 0.1), y1 = log(lci[2,j]+ 0.1), l
 points(1:length(val), log(lmed[j] + 0.1), pch = 16)
 axis(2, at = log(c(0.1,1,2,3,5,10,20, 50, 100)), labels = c(0,1,2,3,5,10,20,50, 100), las = 2)
 axis(1, at = 1:length(val), labels = 1:length(val))
-legend('topleft', legend = c('Biopsy','Surgery','Surgery NAC response','Prediction'), 
-       pch = c(4, 1, 1, 16), lwd = 2, lty = c(0, 0 , 0 ,1), col = c(4, 3, 2, 1))
+legend('topleft', legend = c('Biopsy','Surgery NAC response','Prediction'), 
+       pch = c(4, 1, 16), lwd = 2, lty = c(0, 0 ,1), col = c(4, 2, 1))
 dev.off()

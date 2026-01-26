@@ -7,25 +7,25 @@
 # libraries
 library(tidyverse)
 library(scales)
+sim_sur_l <- rpois(n = length(lambda), lambda = lambda)
+sim_sur <- matrix(sim_sur_l, nrow = nrow(lambda), ncol = ncol(lambda))
 
 # raw and absolute differences
-difference <- lmed - validation$m_sur
-# > validation[217,]
-#     m_bio m_sur       Su       Si L        U resp_Rx
-# 482    57    56 23.19283 1.546671 4 3.765191       0
-difference <- difference[-217]
+difference <- sim_sur_l - validation$m_sur
+
+#difference <- difference
 abs_difference <- abs(difference)
 
 
 # comprehensive data frame
 plot_data <- data.frame(
-  patient_id = val[-217],
+  patient_id = val,
   difference = difference,
   abs_difference = abs_difference,
-  surface = validation$Su[-217],  m_sur = validation$m_sur[-217],
-  lmed = lmed[-217],
-  location = validation$L[-217],
-  tumor_size = validation$Si[-217]
+  surface = validation$Su,  m_sur = validation$m_sur,
+  lmed = lmed,
+  location = validation$L,
+  tumor_size = validation$Si
 )
 
 # only the first 100 patients (rows)
@@ -59,7 +59,7 @@ plot(plot_data_surface$x_position, plot_data_surface$difference,
                   alpha("#2ECC71", 0.6), 
                   alpha("#E74C3C", 0.6)),
      xlab = "", 
-     ylab = "Signed Difference (λ - m_surg)",
+     ylab = "Signed Difference (sim_surg - m_surg)",
      main = "Signed Prediction Error (Ordered by Biopsy Surface)",
      bty = "l",
      ylim = range(plot_data_surface$difference) * 1.15,
@@ -170,10 +170,10 @@ jpeg(paste0("output/figures/", "Posterior_Difference.jpg"),
      width = 5, height = 5, res = 400)
 ## using the posterior
 lambda_diff <- lambda - validation$m_sur
-density(lambda_diff[,-217])
-dens(lambda_diff[,-217], xlim = c(-7,7), ylim=c(0,4.5),  lwd = 3, 
+density(lambda_diff)
+dens(lambda_diff, xlim = c(-15,15),   lwd = 3, 
 main = 'Signed Prediction Error on Validation set', 
-xlab = "Posterior Probability of Signed Difference (λ - m_surg)", 
+xlab = "Posterior Probability of Signed Difference (sim_surg - m_surg)", 
 show.zero = TRUE, adj=0.5)
 legend("topleft", legend = "model underestimate", bty="n")
 legend("topright", legend = "model overestimate", bty="n")
